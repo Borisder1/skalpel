@@ -27,7 +27,14 @@ CONFIG = {
     "fvg_min_size": 0.5,
 }
 
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+SYMBOLS = [
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", 
+    "AVAXUSDT", "DOGEUSDT", "DOTUSDT", "LINKUSDT", "MATICUSDT", 
+    "LTCUSDT", "BCHUSDT", "ATOMUSDT", "UNIUSDT", "NEARUSDT", 
+    "APTUSDT", "OPUSDT", "ARBUSDT", "INJUSDT", "RNDRUSDT", 
+    "SUIUSDT", "SEIUSDT", "FETUSDT", "PEPEUSDT", "WIFUSDT", 
+    "SHIBUSDT", "TONUSDT", "BNBUSDT", "TRXUSDT", "FILUSDT"
+]
 TIMEFRAME = "15m"
 
 # Зберігаємо стан для кожної пари (остання свічка, де знайдено сетап)
