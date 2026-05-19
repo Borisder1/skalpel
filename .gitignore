@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+data/
+reports/
+trades_history.db
+.gemini/

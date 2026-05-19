@@ -1,0 +1,267 @@
+//@version=6
+strategy("SMC Racer v1", overlay=true, calc_on_every_tick=false, process_orders_on_close=false, max_lines_count=100, max_labels_count=100, max_boxes_count=100)
+
+// =========================
+// Inputs
+// =========================
+grp1 = "Фільтри та Тренд"
+htfTf = input.timeframe("240", "Старший ТФ", group=grp1)
+emaFastLen = input.int(50, "Швидка EMA (HTF)", group=grp1)
+emaSlowLen = input.int(200, "Повільна EMA (HTF)", group=grp1)
+adxLen = input.int(14, "ADX період (Тренд/Боковик)", group=grp1)
+adxThresh = input.int(20, "ADX поріг (вище = тренд)", group=grp1)
+volMult = input.float(1.5, "Множник об'єму для імпульсу", group=grp1)
+
+grp2 = "SMC та Вхід"
+liqLookback = input.int(20, "Період ліквідності (Sweep)", group=grp2)
+fibLevel = input.float(0.618, "Рівень Фібоначчі (OTE)", minval=0.1, maxval=0.9, step=0.05, group=grp2)
+fvgMinSize = input.float(0.5, "Мін. розмір FVG (в ATR)", step=0.1, group=grp2)
+
+grp3 = "Ризик-менеджмент"
+riskPct = input.float(1.0, "Ризик на угоду %", step=0.1, group=grp3)
+slAtrMult = input.float(1.5, "Множник SL (від ATR)", step=0.1, group=grp3)
+tp1Rr = input.float(1.5, "Take-Profit 1 (RR)", step=0.1, group=grp3)
+tp2Rr = input.float(3.0, "Take-Profit 2 (RR)", step=0.1, group=grp3)
+
+// =========================
+// Індикатори та Стан Ринку
+// =========================
+atr = ta.atr(14)
+volMa = ta.sma(volume, 20)
+
+[htfEmaFast, htfEmaSlow] = request.security(syminfo.tickerid, htfTf, [ta.ema(close, emaFastLen), ta.ema(close, emaSlowLen)], lookahead=barmerge.lookahead_off)
+[plusDI, minusDI, adx] = ta.dmi(adxLen, adxLen)
+
+bool isSideways = adx < adxThresh
+bool isHtfBullish = htfEmaFast > htfEmaSlow
+bool isHtfBearish = htfEmaFast < htfEmaSlow
+
+string marketStateTxt = isSideways ? "Боковик / Консолідація" : isHtfBullish ? "Бичачий Тренд" : "Ведмежий Тренд"
+color stateColor = isSideways ? color.gray : isHtfBullish ? color.teal : color.maroon
+
+// =========================
+// SMC Logic (Sweep + Impulse + FVG)
+// =========================
+float highestHigh = ta.highest(high[1], liqLookback)
+float lowestLow = ta.lowest(low[1], liqLookback)
+
+bool sweptHigh = high > highestHigh and close < highestHigh
+bool sweptLow = low < lowestLow and close > lowestLow
+
+var float lastSweepHigh = na
+var float lastSweepLow = na
+var int lastSweepHighBar = na
+var int lastSweepLowBar = na
+
+if sweptHigh
+    lastSweepHigh := high
+    lastSweepHighBar := bar_index
+if sweptLow
+    lastSweepLow := low
+    lastSweepLowBar := bar_index
+
+bool bullFvg = bar_index >= 2 and low > high[2]
+bool bearFvg = bar_index >= 2 and high < low[2]
+
+float bodySize = math.abs(close - open)
+bool isImpulseBull = close > open and bodySize > atr * 0.6 and volume > volMa * volMult
+bool isImpulseBear = close < open and bodySize > atr * 0.6 and volume > volMa * volMult
+
+// =========================
+// OTE Setup Detection
+// =========================
+type Setup
+    bool valid
+    int dir
+    float entry
+    float sl
+    float tp1
+    float tp2
+    int bornBar
+    float swingLow
+    float swingHigh
+
+var Setup currentSetup = Setup.new(false, 0, na, na, na, na, na, na, na)
+var box fvgBox = na
+
+// Validating setup
+float localLowest = ta.lowest(low, 5)
+float localHighest = ta.highest(high, 5)
+
+if bullFvg and isImpulseBull and not isSideways and isHtfBullish
+    float swingLow = localLowest
+    if not na(lastSweepLow) and (bar_index - lastSweepLowBar) < 10
+        swingLow := lastSweepLow
+    float swingHigh = high
+    float fvgTop = low
+    float fvgBot = high[2]
+    if (fvgTop - fvgBot) >= atr * fvgMinSize
+        float fibEntry = swingLow + (swingHigh - swingLow) * (1.0 - fibLevel)
+        float entryPrice = math.min(fibEntry, fvgTop)
+        float slPrice = math.min(swingLow, entryPrice - atr * slAtrMult)
+        float risk = math.max(entryPrice - slPrice, syminfo.mintick)
+        float tp1Price = entryPrice + risk * tp1Rr
+        float tp2Price = entryPrice + risk * tp2Rr
+        
+        currentSetup := Setup.new(true, 1, entryPrice, slPrice, tp1Price, tp2Price, bar_index, swingLow, swingHigh)
+        if not na(fvgBox)
+            box.delete(fvgBox)
+        fvgBox := box.new(bar_index - 2, fvgTop, bar_index + 10, fvgBot, bgcolor=color.new(color.teal, 80), border_color=color.teal)
+
+if bearFvg and isImpulseBear and not isSideways and isHtfBearish
+    float swingHigh = localHighest
+    if not na(lastSweepHigh) and (bar_index - lastSweepHighBar) < 10
+        swingHigh := lastSweepHigh
+    float swingLow = low
+    float fvgTop = low[2]
+    float fvgBot = high
+    if (fvgTop - fvgBot) >= atr * fvgMinSize
+        float fibEntry = swingHigh - (swingHigh - swingLow) * (1.0 - fibLevel)
+        float entryPrice = math.max(fibEntry, fvgBot)
+        float slPrice = math.max(swingHigh, entryPrice + atr * slAtrMult)
+        float risk = math.max(slPrice - entryPrice, syminfo.mintick)
+        float tp1Price = entryPrice - risk * tp1Rr
+        float tp2Price = entryPrice - risk * tp2Rr
+        
+        currentSetup := Setup.new(true, -1, entryPrice, slPrice, tp1Price, tp2Price, bar_index, swingLow, swingHigh)
+        if not na(fvgBox)
+            box.delete(fvgBox)
+        fvgBox := box.new(bar_index - 2, fvgTop, bar_index + 10, fvgBot, bgcolor=color.new(color.maroon, 80), border_color=color.maroon)
+
+// Invalidate setup if price goes too far or too long
+if currentSetup.valid and bar_index - currentSetup.bornBar > 15
+    currentSetup.valid := false
+
+// =========================
+// Execution & Position Management
+// =========================
+bool inPosition = strategy.position_size != 0
+
+if currentSetup.valid and not inPosition
+    float riskCash = strategy.equity * riskPct * 0.01
+    float riskPerShare = math.max(math.abs(currentSetup.entry - currentSetup.sl), syminfo.mintick)
+    float qty = riskCash / riskPerShare
+    
+    if currentSetup.dir == 1
+        strategy.entry("Long", strategy.long, qty=qty, limit=currentSetup.entry)
+        strategy.exit("TP1", "Long", qty_percent=50, limit=currentSetup.tp1, stop=currentSetup.sl)
+        strategy.exit("TP2", "Long", limit=currentSetup.tp2, stop=currentSetup.sl)
+    else if currentSetup.dir == -1
+        strategy.entry("Short", strategy.short, qty=qty, limit=currentSetup.entry)
+        strategy.exit("TP1", "Short", qty_percent=50, limit=currentSetup.tp1, stop=currentSetup.sl)
+        strategy.exit("TP2", "Short", limit=currentSetup.tp2, stop=currentSetup.sl)
+
+// Cancel orders if setup invalidated
+if not currentSetup.valid and not inPosition
+    strategy.cancel_all()
+
+// Variables for dashboard
+var int entryBar = na
+var float currentAtrAtEntry = na
+var float entryPosRisk = na
+
+if inPosition and strategy.position_size[1] == 0
+    entryBar := bar_index
+    currentAtrAtEntry := atr
+    entryPosRisk := math.max(math.abs(currentSetup.entry - currentSetup.sl), syminfo.mintick)
+    currentSetup.valid := false // Clear setup once triggered
+
+if not inPosition
+    entryBar := na
+    currentAtrAtEntry := na
+    entryPosRisk := na
+
+// =========================
+// Visuals: Lines & Labels
+// =========================
+var line entryLine = na
+var line slLine = na
+var line tp1Line = na
+var line tp2Line = na
+var label entryLabel = na
+var label slLabel = na
+var label tp1Label = na
+var label tp2Label = na
+
+if currentSetup.valid and not inPosition
+    if na(entryLine)
+        entryLine := line.new(currentSetup.bornBar, currentSetup.entry, bar_index + 5, currentSetup.entry, color=color.white, style=line.style_dashed)
+        slLine := line.new(currentSetup.bornBar, currentSetup.sl, bar_index + 5, currentSetup.sl, color=color.maroon, style=line.style_dashed)
+        tp1Line := line.new(currentSetup.bornBar, currentSetup.tp1, bar_index + 5, currentSetup.tp1, color=color.teal, style=line.style_solid)
+        tp2Line := line.new(currentSetup.bornBar, currentSetup.tp2, bar_index + 5, currentSetup.tp2, color=color.teal, style=line.style_solid, width=2)
+        
+        entryLabel := label.new(bar_index + 5, currentSetup.entry, "Limit Entry", style=label.style_label_left, color=color.new(color.white, 80), textcolor=color.white, size=size.small)
+        slLabel := label.new(bar_index + 5, currentSetup.sl, "Stop Loss", style=label.style_label_left, color=color.new(color.maroon, 80), textcolor=color.maroon, size=size.small)
+        tp1Label := label.new(bar_index + 5, currentSetup.tp1, "TP1", style=label.style_label_left, color=color.new(color.teal, 80), textcolor=color.teal, size=size.small)
+        tp2Label := label.new(bar_index + 5, currentSetup.tp2, "TP2", style=label.style_label_left, color=color.new(color.teal, 80), textcolor=color.teal, size=size.small)
+    else
+        line.set_xy1(entryLine, currentSetup.bornBar, currentSetup.entry)
+        line.set_xy2(entryLine, bar_index + 5, currentSetup.entry)
+        line.set_xy1(slLine, currentSetup.bornBar, currentSetup.sl)
+        line.set_xy2(slLine, bar_index + 5, currentSetup.sl)
+        line.set_xy1(tp1Line, currentSetup.bornBar, currentSetup.tp1)
+        line.set_xy2(tp1Line, bar_index + 5, currentSetup.tp1)
+        line.set_xy1(tp2Line, currentSetup.bornBar, currentSetup.tp2)
+        line.set_xy2(tp2Line, bar_index + 5, currentSetup.tp2)
+        
+        label.set_xy(entryLabel, bar_index + 5, currentSetup.entry)
+        label.set_xy(slLabel, bar_index + 5, currentSetup.sl)
+        label.set_xy(tp1Label, bar_index + 5, currentSetup.tp1)
+        label.set_xy(tp2Label, bar_index + 5, currentSetup.tp2)
+
+if inPosition or (not currentSetup.valid and not inPosition)
+    line.delete(entryLine)
+    line.delete(slLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    label.delete(entryLabel)
+    label.delete(slLabel)
+    label.delete(tp1Label)
+    label.delete(tp2Label)
+    entryLine := na
+    slLine := na
+    tp1Line := na
+    tp2Line := na
+    entryLabel := na
+    slLabel := na
+    tp1Label := na
+    tp2Label := na
+
+
+// =========================
+// Dashboard
+// =========================
+var table dash = table.new(position.bottom_right, 2, 5, bgcolor=color.new(color.black, 85), border_color=color.gray, border_width=1)
+
+if barstate.islastconfirmedhistory or barstate.isrealtime
+    table.cell(dash, 0, 0, "Ринок", text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 0, marketStateTxt, text_color=stateColor, text_size=size.small)
+    
+    table.cell(dash, 0, 1, "Позиція", text_color=color.silver, text_size=size.small)
+    string posTxt = strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT"
+    color posColor = strategy.position_size > 0 ? color.teal : strategy.position_size < 0 ? color.maroon : color.gray
+    table.cell(dash, 1, 1, posTxt, text_color=posColor, text_size=size.small)
+    
+    string entryTimeTxt = "n/a"
+    string etaTxt = "n/a"
+    
+    if inPosition and not na(entryBar)
+        int barsHeld = bar_index - entryBar
+        entryTimeTxt := str.tostring(barsHeld) + " барів тому"
+        
+        float avgMovePerBar = math.max(currentAtrAtEntry * 0.45, syminfo.mintick)
+        float distToTp2 = entryPosRisk * tp2Rr
+        int estimatedBars = int(math.ceil(distToTp2 / avgMovePerBar))
+        int barsLeft = math.max(estimatedBars - barsHeld, 0)
+        etaTxt := "~" + str.tostring(barsLeft) + " барів"
+        
+    table.cell(dash, 0, 2, "Вхід", text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 2, entryTimeTxt, text_color=color.white, text_size=size.small)
+    
+    table.cell(dash, 0, 3, "ETA до TP2", text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 3, etaTxt, text_color=color.white, text_size=size.small)
+    
+    table.cell(dash, 0, 4, "Налаштування", text_color=color.silver, text_size=size.small)
+    string setupTxt = currentSetup.valid ? "ЧЕКАЮ ВІДКАТ (Fib " + str.tostring(fibLevel) + ")" : "ШУКАЮ ІМПУЛЬС"
+    color setupColor = currentSetup.valid ? color.yellow : color.gray
+    table.cell(dash, 1, 4, setupTxt, text_color=setupColor, text_size=size.small)

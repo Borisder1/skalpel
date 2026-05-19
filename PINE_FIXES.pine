@@ -1,0 +1,69 @@
+// Pine Script v6 - Критичні виправлення для застосування
+// Скопіюйте ці виправлені секції в вашу стратегію
+
+// =============================================================================
+// ВИПРАВЛЕННЯ 1: Консолідація Security викликів (замінити рядки ~780-800)
+// =============================================================================
+[htfClose, htfMa] = request.security(syminfo.tickerid, htfTf, [close, ta.ema(close, 50)], lookahead=barmerge.lookahead_off)
+TrendState htfTrend = htfClose > htfMa ? TrendState.Bullish : htfClose < htfMa ? TrendState.Bearish : TrendState.Neutral
+
+float atrV = ta.atr(atrLen)
+float atrBase = ta.sma(ta.atr(atrLen), 20)
+bool highVolAnomaly = atrV > atrBase * 1.25
+float dynamicSlMult = riskAtrMult * (nyOpenBurst and highVolAnomaly ? nySlExpandFactor : 1.0)
+float volMa = ta.sma(volume, 20)
+float relVol = volume / math.max(volMa, 1)
+bool strongBreakoutVol = relVol >= 2.0
+
+// Локальний proxy неповноти бару
+float localBuyVol = close > open ? volume : 0.0
+float localSellVol = close < open ? volume : 0.0
+float imbalanceRatio = math.max(localBuyVol, localSellVol) / math.max(math.min(localBuyVol, localSellVol), 1.0)
+bool emptyVolume = volMa <= 0
+state.imbalanceOk := imbalanceRatio >= imbalanceThreshold and not emptyVolume
+
+string corrSymbol = corrMode == "DXY" ? dxySymbol : btcDomSymbol
+[corrSeries, btcRefClose] = request.security(
+    timeframe.period,
+    [close, close],
+    [corrSymbol, btcRefSymbol],
+    lookahead=barmerge.lookahead_off
+)
+
+// =============================================================================
+// ВИПРАВЛЕННЯ 2: Безпечний шаблон ділення (застосувати у всіх діленнях)
+// =============================================================================
+// Шаблон безпечного ділення з mintick захистом:
+float safeDivision(float numerator, float denominator) =>
+    numerator / math.max(denominator, syminfo.mintick)
+
+// Використання у розмірі позиції:
+self.plan.qty := (riskCash / math.max(self.plan.risk, syminfo.mintick)) * simMultiplier * volMultiplier
+
+// Використання в оцінці барів:
+float movePerBar = math.max(atrV * 0.45, syminfo.mintick)
+self.plan.estBarsToTp1 := int(math.ceil((self.plan.tp1 - self.plan.entry) / movePerBar))
+
+// =============================================================================
+// ВИПРАВЛЕННЯ 3: Охорона виявлення паттернів (для updatePatternIntelligence)
+// =============================================================================
+// Обгорнути весь pattern detection block у barstate.isconfirmed:
+if barstate.isconfirmed
+    method updatePatternIntelligence(MarketState self, float atrValue, float relVol, int pivLen, int flagBars, float rvThreshold, float avgSlope, bool recentFlagLossPenalty, bool lowLiquidityPenalty) =>
+        // ... весь код методу ...
+        
+        // Всі виклики активації паттернів тут
+        if newBullFlag
+            self.pattern.activatePattern(PatternType.BullFlag, true, chHigh[1], close + impulseUp, relVol)
+        // ... інші патерни
+
+// =============================================================================
+// ВИПРАВЛЕННЯ 4: NA-захищений перевірка context score
+// =============================================================================
+// Заміна логіки contextOk:
+bool contextOk = not useContextScoring or ctxSamples < minContextSamples or (not na(ctxScore) and ctxScore >= minContextScore)
+
+// Або явніше:
+bool contextOk = useContextScoring 
+    ? (ctxSamples >= minContextSamples and not na(ctxScore) and ctxScore >= minContextScore)
+    : true

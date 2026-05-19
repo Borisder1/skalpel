@@ -1,0 +1,87 @@
+//@version=6
+// Pine Script v6 - Оновлення до Naked FVG Scalping (на основі бектесту)
+// Замініть відповідні блоки у вашій стратегії SMC Agent v6
+
+// =============================================================================
+// ОНОВЛЕННЯ 1: Спрощені фільтри та параметри (налаштування Inputs)
+// =============================================================================
+// Знайдіть ваші input'и і змініть дефолтні значення:
+minEntryScore = input.int(2, "Min Entry Score", minval=1, maxval=9) // Було 5, стало 2
+relVolThreshold = input.float(1.5, "Strong Vol Threshold", minval=1.0) // Було 2.0, стало 1.5
+
+// =============================================================================
+// ОНОВЛЕННЯ 2: Агресивне формування Order Block (Naked FVG)
+// Замініть вашу стару логіку обробки Imbalance/OrderBlock (видаліть 4 кроки)
+// =============================================================================
+
+// 1. Шукаємо FVG (Fair Value Gap)
+bool bullFvg = bar_index >= 2 and low > high[2]
+bool bearFvg = bar_index >= 2 and high < low[2]
+
+// 2. Сильний імпульс (Displacement) або об'єм
+float bodySize = math.abs(close - open)
+bool bullDisp = close > open and bodySize > atrV * 0.5
+bool bearDisp = close < open and bodySize > atrV * 0.5
+bool strongImpulse = relVol >= relVolThreshold
+
+// 3. Формуємо Скальпінгові зони ОДРАЗУ
+if bullFvg and (bullDisp or strongImpulse)
+    state.ob.valid := true
+    state.ob.bullish := true
+    state.ob.high := low         // Верхня межа FVG
+    state.ob.low := high[2]      // Нижня межа FVG
+    state.ob.bornIndex := bar_index
+    state.ob.displaced := true
+    state.ob.hasFvg := true
+    state.ob.alreadyTraded := false
+
+if bearFvg and (bearDisp or strongImpulse)
+    state.ob.valid := true
+    state.ob.bullish := false
+    state.ob.high := low[2]      // Верхня межа FVG
+    state.ob.low := high         // Нижня межа FVG
+    state.ob.bornIndex := bar_index
+    state.ob.displaced := true
+    state.ob.hasFvg := true
+    state.ob.alreadyTraded := false
+
+// 4. Швидкий таймаут для зони (20 барів замість 100)
+if state.ob.valid and (bar_index - state.ob.bornIndex > 20)
+    state.ob.valid := false
+
+// 5. Скасування зони при пробитті ціною закриття
+if state.ob.valid
+    if state.ob.bullish and close < state.ob.low
+        state.ob.valid := false
+    else if not state.ob.bullish and close > state.ob.high
+        state.ob.valid := false
+
+// =============================================================================
+// ОНОВЛЕННЯ 3: Trade Management (Фіксація 50% і правильний Б/У)
+// Оновіть блок виходу з позиції (strategy.exit)
+// =============================================================================
+
+// Замість старого коду, який використовував qty_percent=33:
+if strategy.position_size > 0
+    // Фіксуємо рівно 50% прибутку на TP1
+    strategy.exit("TP1_Long", "Long", qty_percent=50, limit=tp1_price, stop=sl_price)
+    
+    // БЕЗЗБИТОК: Переносимо стоп тільки якщо ціна вже досягла TP1
+    float current_sl = sl_price
+    if high >= tp1_price
+        current_sl := math.max(sl_price, strategy.position_avg_price)
+        
+    // Інші 50% позиції закриваються на TP2
+    strategy.exit("TP2_Long", "Long", limit=tp2_price, stop=current_sl)
+
+if strategy.position_size < 0
+    // Фіксуємо рівно 50% прибутку на TP1
+    strategy.exit("TP1_Short", "Short", qty_percent=50, limit=tp1_price, stop=sl_price)
+    
+    // БЕЗЗБИТОК: Переносимо стоп тільки якщо ціна вже досягла TP1
+    float current_sl = sl_price
+    if low <= tp1_price
+        current_sl := math.min(sl_price, strategy.position_avg_price)
+        
+    // Інші 50% позиції закриваються на TP2
+    strategy.exit("TP2_Short", "Short", limit=tp2_price, stop=current_sl)

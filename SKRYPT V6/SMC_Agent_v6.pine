@@ -1,0 +1,1752 @@
+//@version=6
+// Backtest mode is intentionally bar-close only. For live scalping, clone this script and enable calc_on_every_tick=true.
+// If buffer errors persist on heavy crypto symbols, increase max_bars_back to 1000.
+strategy("SMC Autonomous Agent v6", overlay=true, calc_on_every_tick=false, process_orders_on_close=true, max_lines_count=500, max_labels_count=500, max_boxes_count=250, max_polylines_count=50, max_bars_back=500)
+
+// =========================
+// Enums
+// =========================
+enum AgentPhase
+    Perception
+    Reasoning
+    Planning
+    Execution
+
+enum TrendState
+    Bullish
+    Bearish
+    Neutral
+
+enum AgentStatus
+    Idle
+    Armed
+    InPosition
+    Cooldown
+
+enum Direction
+    Long
+    Short
+    Flat
+
+enum SignalGrade
+    None
+    B
+    A
+
+enum PatternType
+    None
+    BullFlag
+    BearFlag
+    HeadShoulders
+    TriangleBull
+    TriangleBear
+    InvHeadShoulders
+    DoubleTop
+    DoubleBottom
+    TripleTop
+    TripleBottom
+    TriangleAscending
+    TriangleDescending
+    WedgeBullish
+    WedgeBearish
+    WedgeFalling
+    WedgeRising
+    WedgeFallingCont
+    WedgeRisingCont
+    BullPennant
+    BearPennant
+    CupHandle
+    ChannelRising
+    ChannelFalling
+    RoundingBottom
+    RoundingTop
+    DiamondTop
+
+// =========================
+// Localization
+// =========================
+string lang = input.string("UA", "Мова", options=["UA", "EN", "PL"])
+
+f_txt(string key, string language) =>
+    switch language
+        "UA" =>
+            switch key
+                "phase" => "Фаза"
+                "trend" => "Тренд"
+                "status" => "Статус"
+                "ob" => "Ордер-блок"
+                "liq" => "Ліквідність"
+                "rr" => "RR"
+                "dir" => "Напрям"
+                "grade" => "Клас"
+                "bars" => "Барів до TP1"
+                "slbars" => "Барів до SL"
+                "signalA" => "Сигнал A"
+                "signalB" => "Сигнал B"
+                "none" => "Нема"
+                "pattern" => "Патерн"
+                "prob" => "Ймовірність"
+                "timetotarget" => "Час до цілі"
+                => key
+        "PL" =>
+            switch key
+                "phase" => "Faza"
+                "trend" => "Trend"
+                "status" => "Status"
+                "ob" => "Order Block"
+                "liq" => "Płynność"
+                "rr" => "RR"
+                "dir" => "Kierunek"
+                "grade" => "Klasa"
+                "bars" => "Świece do TP1"
+                "slbars" => "Świece do SL"
+                "signalA" => "Sygnał A"
+                "signalB" => "Sygnał B"
+                "none" => "Brak"
+                "pattern" => "Formacja"
+                "prob" => "Prawdopodobieństwo"
+                "timetotarget" => "Czas do celu"
+                => key
+        =>
+            switch key
+                "phase" => "Phase"
+                "trend" => "Trend"
+                "status" => "Status"
+                "ob" => "Order Block"
+                "liq" => "Liquidity"
+                "rr" => "RR"
+                "dir" => "Direction"
+                "grade" => "Grade"
+                "bars" => "Bars to TP1"
+                "slbars" => "Bars to SL"
+                "signalA" => "Signal A"
+                "signalB" => "Signal B"
+                "none" => "None"
+                "pattern" => "Pattern"
+                "prob" => "Probability"
+                "timetotarget" => "Time to target"
+                => key
+
+f_patternName(PatternType pType) =>
+    switch pType
+        PatternType.BullFlag           => "Бичачий прапор"
+        PatternType.BearFlag           => "Ведмежий прапор"
+        PatternType.HeadShoulders      => "Голова і плечі"
+        PatternType.TriangleBull       => "Бичачий трикутник"
+        PatternType.TriangleBear       => "Ведмежий трикутник"
+        PatternType.InvHeadShoulders   => "Перевернена Г і П"
+        PatternType.DoubleTop          => "Подвійна вершина"
+        PatternType.DoubleBottom       => "Подвійне дно"
+        PatternType.TripleTop          => "Потрійна вершина"
+        PatternType.TripleBottom       => "Потрійне дно"
+        PatternType.TriangleAscending  => "Висхідний трикутник"
+        PatternType.TriangleDescending => "Спадний трикутник"
+        PatternType.WedgeBullish       => "Бичачий клин"
+        PatternType.WedgeBearish       => "Ведмежий клин"
+        PatternType.WedgeFalling       => "Спадний клин (розворот)"
+        PatternType.WedgeRising        => "Висхідний клин (розворот)"
+        PatternType.WedgeFallingCont   => "Спадний клин (продовження)"
+        PatternType.WedgeRisingCont    => "Висхідний клин (продовження)"
+        PatternType.BullPennant        => "Бичачий вимпел"
+        PatternType.BearPennant        => "Ведмежий вимпел"
+        PatternType.CupHandle          => "Чаша з ручкою"
+        PatternType.ChannelRising      => "Висхідний канал"
+        PatternType.ChannelFalling     => "Спадний канал"
+        PatternType.RoundingBottom     => "Закруглене дно"
+        PatternType.RoundingTop        => "Закруглена вершина"
+        PatternType.DiamondTop         => "Ромб на вершині"
+        => "Нема"
+
+f_contextKey(PatternType pType, bool sweptHigh, bool sweptLow, TrendState trend, bool rsOk, bool imbOk, bool pocLongOk, bool pocShortOk, string sessionTag) =>
+    string liqTag = sweptHigh ? "SweepHigh" : sweptLow ? "SweepLow" : "NoSweep"
+    string pocTag = pocLongOk ? "POCAbove" : pocShortOk ? "POCBelow" : "POCMid"
+    f_patternName(pType) + "|" + liqTag + "|" + str.tostring(trend) + "|" + (rsOk ? "RS+" : "RS-") + "|" + (imbOk ? "Imb+" : "Imb-") + "|" + pocTag + "|" + sessionTag
+
+// =========================
+// Inputs
+// =========================
+bool strategyActive = input.bool(true, "Увімкнути виконання strategy.*")
+string htfTf = input.timeframe("240", "Старший ТФ для тренду")
+int swingLen = input.int(3, "Довжина pivot", minval=2, maxval=20)
+int liquidityLookback = input.int(20, "Період ліквідності", minval=5, maxval=200)
+int atrLen = input.int(14, "Період ATR", minval=5, maxval=100)
+float riskAtrMult = input.float(1.1, "Множник SL ATR", minval=0.2, maxval=10.0, step=0.1)
+float rrTp1 = input.float(1.0, "TP1 RR", minval=0.2, maxval=10.0, step=0.1)
+float rrTp2 = input.float(1.8, "TP2 RR", minval=0.2, maxval=20.0, step=0.1)
+float rrTp3 = input.float(2.8, "TP3 RR", minval=0.2, maxval=30.0, step=0.1)
+int cooldownBars = input.int(4, "Барів паузи", minval=0, maxval=100)
+int minBarsBetweenSignals = input.int(6, "Мін. барів між сигналами", minval=0, maxval=200)
+int maxSignalsPerDay = input.int(12, "Макс. сигналів на день", minval=1, maxval=100)
+string mode = input.string("Active 15m", "Режим", options=["Active 15m", "Conservative"])
+
+// Pattern Intelligence settings
+int patternPivotLen = input.int(3, "Pivot патернів", minval=2, maxval=10)
+int flagWindow = input.int(10, "Вікно каналу прапора", minval=5, maxval=30)
+int projectionBars = input.int(10, "Барів проєкції", minval=5, maxval=10)
+float relVolumeThreshold = input.float(1.5, "Поріг відносного обсягу пробою", minval=1.0, maxval=5.0, step=0.05)
+float imbalanceThreshold = input.float(1.2, "Поріг дисбалансу", minval=1.0, maxval=4.0, step=0.05)
+string nyOpenBurstSession = input.session("1330-1400", "Імпульс відкриття Нью-Йорка (UTC)")
+float nySlExpandFactor = input.float(1.35, "Розширення SL для NY", minval=1.0, maxval=3.0, step=0.05)
+string corrMode = input.string("BTC.D", "Джерело кореляції", options=["BTC.D", "DXY"])
+string dxySymbol = input.symbol("TVC:DXY", "Символ DXY")
+string btcDomSymbol = input.symbol("CRYPTOCAP:BTC.D", "Символ домінації BTC")
+int corrLookback = input.int(8, "Період кореляції", minval=2, maxval=40)
+string btcRefSymbol = input.symbol("BINANCE:BTCUSDT", "BTC-еталон для RS")
+int rsLookback = input.int(20, "Період відносної сили", minval=5, maxval=100)
+float rsLongThreshold = input.float(-0.05, "Поріг RS для long", minval=-0.2, maxval=0.2, step=0.01)
+float maxSessionDdPct = input.float(5.0, "RiskGuard: макс. DD сесії %", minval=1.0, maxval=30.0, step=0.5)
+float riskPerTradePct = input.float(1.0, "Ризик на угоду % equity", minval=0.1, maxval=5.0, step=0.1)
+int pocLookback = input.int(30, "Період POC консолідації", minval=10, maxval=200)
+int baseTimeStopBars = input.int(28, "База адаптивного time-stop", minval=5, maxval=200)
+int chandelierLen = input.int(22, "Chandelier ATR lookback", minval=5, maxval=100)
+float chandelierAtrMult = input.float(3.0, "Chandelier ATR множник", minval=1.0, maxval=8.0, step=0.1)
+int minEntryScore = input.int(2, "Мін. score входу", minval=1, maxval=9)
+bool useImbalanceSequence = input.bool(true, "Вимагати LS→Імпульс→MSS→FVG")
+int maxImbalanceSequenceBars = input.int(72, "Макс. барів послідовності дисбалансу", minval=5, maxval=200)
+
+bool useLondon = input.bool(false, "Використовувати Лондон")
+bool useNewYork = input.bool(false, "Використовувати Нью-Йорк")
+bool useAsia = input.bool(false, "Використовувати Азію")
+string londonSession = input.session("0700-1100", "Лондонська сесія")
+string newYorkSession = input.session("1300-1700", "Нью-Йоркська сесія")
+string asiaSession = input.session("0000-0400", "Азійська сесія")
+
+bool showDashboard = input.bool(true, "Показувати панель")
+bool showObBoxes = input.bool(true, "Показувати OB-зони")
+bool showFvgBoxes = input.bool(true, "Показувати FVG-зони")
+bool showTradePlanLines = input.bool(true, "Показувати лінії плану")
+bool showMicroPatternMarkers = input.bool(false, "Показувати debug-маркери патернів")
+bool showDebugLabels = input.bool(false, "Показувати debug-мітки")
+bool useContextScoring = input.bool(true, "Використовувати контекстний скоринг")
+float minContextScore = input.float(0.62, "Мін. контекстний скоринг", minval=0.3, maxval=0.95, step=0.01)
+int minContextSamples = input.int(20, "Мін. вибірка контексту", minval=5, maxval=200)
+bool useSimilaritySizing = input.bool(true, "Сайзинг за схожістю трикутників")
+float eqTolerancePct = input.float(0.1, "Допуск EQH/EQL %", minval=0.02, maxval=1.0, step=0.01)
+float liquidityPiercePct = input.float(0.05, "Пробій магніту ліквідності %", minval=0.01, maxval=0.3, step=0.01)
+
+// Explicit source buffers protect dynamic input-based offsets used by pattern, RS and POC logic.
+max_bars_back(open, 500)
+max_bars_back(high, 500)
+max_bars_back(low, 500)
+max_bars_back(close, 500)
+max_bars_back(volume, 500)
+
+// =========================
+// UDTs
+// =========================
+type OrderBlock
+    bool valid
+    bool bullish
+    float high
+    float low
+    int bornIndex
+    bool displaced
+    bool hasFvg
+
+type LiquidityState
+    bool sweptHigh
+    bool sweptLow
+    float levelHigh
+    float levelLow
+    int barIndex
+
+type StructureState
+    float lastSwingHigh
+    float lastSwingLow
+    int lastSwingHighIndex
+    int lastSwingLowIndex
+    bool bosBull
+    bool bosBear
+    bool chochBull
+    bool chochBear
+    bool bullFlag
+    bool bearFlag
+
+type ImbalanceModel
+    bool sweepSeen
+    bool impulseSeen
+    bool mssSeen
+    bool returnedToFvg
+    bool bullish
+    bool trap
+    float fvgHigh
+    float fvgLow
+    int sweepIndex
+    int impulseIndex
+    int mssIndex
+    string stage
+
+type PatternState
+    PatternType pType
+    bool active
+    bool bullish
+    bool fakeout
+    float breakoutLevel
+    float target
+    float relVolume
+    float successProb
+    int breakoutIndex
+    float slope
+    bool degraded
+
+type PatternGeometry
+    array<line> lines
+    array<label> labels
+    array<box> boxes
+    chart.point breakoutPoint
+    float measuredTarget
+    PatternType pType
+    bool confirmed
+    int bornBar
+    int maxBarsLife
+    float ph0
+    float ph1
+    float ph2
+    float pl0
+    float pl1
+    int ph0Bar
+    int ph1Bar
+    int ph2Bar
+    int pl0Bar
+    int pl1Bar
+    float flagPoleStart
+    float flagPoleEnd
+    int flagPoleOffset
+    float flagChannelHigh
+    float flagChannelLow
+
+type Diagnostics
+    string lastBlockReason
+    string lastTpAdjustment
+    float originalTp1
+    float adjustedTp1
+    int patternCountActive
+
+type TradePlan
+    Direction dir
+    SignalGrade grade
+    float entry
+    float stop
+    float risk
+    float tp1
+    float tp2
+    float tp3
+    float qty
+    float originalTp1
+    float structuralTp1
+    string exitReason
+    string ctxKey
+    float ctxScore
+    int ctxSamples
+    int estBarsToTp1
+    int estBarsToStop
+    bool ready
+
+type MarketState
+    AgentPhase phase
+    TrendState trend
+    AgentStatus status
+    OrderBlock ob
+    LiquidityState liq
+    StructureState structure
+    ImbalanceModel imbalanceModel
+    PatternState pattern
+    Diagnostics diag
+    TradePlan plan
+    int cooldownLeft
+    int lastSignalBar
+    int signalsToday
+    int signalDay
+    bool imbalanceOk
+    int todayWins
+    int todayClosed
+    float sessionPeakEq
+    float sessionMaxDd
+    bool riskExceeded
+    int tradeOpenBar
+    float pocLevel
+    string lastIdeaGrade
+    float lastIdeaRr
+    float lastIdeaTarget
+    string lastPatternName
+    float lastPatternProb
+    float lastPatternTarget
+    float similarityScore
+
+// Persistent statistical buffers (declared before methods for visibility)
+var array<float> pivotHighPrices = array.new<float>()
+var array<int> pivotHighBars = array.new<int>()
+var array<float> pivotLowPrices = array.new<float>()
+var array<int> pivotLowBars = array.new<int>()
+var array<float> eqHighPrices = array.new<float>()
+var array<int> eqHighBars = array.new<int>()
+var array<float> eqLowPrices = array.new<float>()
+var array<int> eqLowBars = array.new<int>()
+var array<float> recentPatternSlopes = array.new<float>()
+var array<int> recentPatternWins = array.new<int>()
+var array<string> recentPatternTypes = array.new<string>()
+var array<float> recentPatternVolatility = array.new<float>()
+var array<string> contextKeys = array.new<string>()
+var map<string, float> contextScoreMap = map.new<string, float>()
+var map<string, int> contextCountMap = map.new<string, int>()
+var map<string, int> contextWinsMap = map.new<string, int>()
+var array<float> triangleFeatureSlopes = array.new<float>()
+var array<float> triangleFeatureVolumes = array.new<float>()
+var array<float> triangleFeatureProbs = array.new<float>()
+var array<line> activePatternLines = array.new_line()
+var array<int> activePatternLineBornBars = array.new<int>()
+var array<label> activePatternLabels = array.new_label()
+var array<int> activePatternLabelBornBars = array.new<int>()
+var array<box> activePatternBoxes = array.new<box>()
+var array<int> activePatternBoxBornBars = array.new<int>()
+
+f_recentFloat(array<float> source, int ago) =>
+    int sz = array.size(source)
+    sz > ago ? array.get(source, sz - 1 - ago) : na
+
+f_recentInt(array<int> source, int ago) =>
+    int sz = array.size(source)
+    sz > ago ? array.get(source, sz - 1 - ago) : na
+
+f_pushPivot(array<float> prices, array<int> bars, float price, int pivotBar, int maxItems) =>
+    if not na(price) and not na(pivotBar)
+        int sz = array.size(bars)
+        bool isNewPivot = sz == 0 or array.get(bars, sz - 1) != pivotBar
+        if isNewPivot
+            array.push(prices, price)
+            array.push(bars, pivotBar)
+            while array.size(prices) > maxItems
+                array.shift(prices)
+                array.shift(bars)
+
+f_trackPatternLine(line ln, int bornBar) =>
+    array.push(activePatternLines, ln)
+    array.push(activePatternLineBornBars, bornBar)
+    if array.size(activePatternLines) > 8
+        line oldLine = array.shift(activePatternLines)
+        array.shift(activePatternLineBornBars)
+        line.delete(oldLine)
+
+f_trackPatternLabel(label lb, int bornBar) =>
+    array.push(activePatternLabels, lb)
+    array.push(activePatternLabelBornBars, bornBar)
+    if array.size(activePatternLabels) > 10
+        label oldLabel = array.shift(activePatternLabels)
+        array.shift(activePatternLabelBornBars)
+        label.delete(oldLabel)
+
+f_trackPatternBox(box bx, int bornBar) =>
+    array.push(activePatternBoxes, bx)
+    array.push(activePatternBoxBornBars, bornBar)
+    if array.size(activePatternBoxes) > 12
+        box oldBox = array.shift(activePatternBoxes)
+        array.shift(activePatternBoxBornBars)
+        box.delete(oldBox)
+
+f_destroyPatternObjectsBorn(int bornBar) =>
+    int lineIdx = array.size(activePatternLines) - 1
+    while lineIdx >= 0
+        if array.get(activePatternLineBornBars, lineIdx) == bornBar
+            line bornLine = array.remove(activePatternLines, lineIdx)
+            array.remove(activePatternLineBornBars, lineIdx)
+            line.delete(bornLine)
+        lineIdx -= 1
+    int labelIdx = array.size(activePatternLabels) - 1
+    while labelIdx >= 0
+        if array.get(activePatternLabelBornBars, labelIdx) == bornBar
+            label bornLabel = array.remove(activePatternLabels, labelIdx)
+            array.remove(activePatternLabelBornBars, labelIdx)
+            label.delete(bornLabel)
+        labelIdx -= 1
+    int boxIdx = array.size(activePatternBoxes) - 1
+    while boxIdx >= 0
+        if array.get(activePatternBoxBornBars, boxIdx) == bornBar
+            box bornBox = array.remove(activePatternBoxes, boxIdx)
+            array.remove(activePatternBoxBornBars, boxIdx)
+            box.delete(bornBox)
+        boxIdx -= 1
+
+f_expirePatternObjects(int maxBarsLife) =>
+    int lineIdx = array.size(activePatternLines) - 1
+    while lineIdx >= 0
+        int lineBornBar = array.get(activePatternLineBornBars, lineIdx)
+        if bar_index - lineBornBar > maxBarsLife
+            line expiredLine = array.remove(activePatternLines, lineIdx)
+            array.remove(activePatternLineBornBars, lineIdx)
+            line.delete(expiredLine)
+        lineIdx -= 1
+    int labelIdx = array.size(activePatternLabels) - 1
+    while labelIdx >= 0
+        int labelBornBar = array.get(activePatternLabelBornBars, labelIdx)
+        if bar_index - labelBornBar > maxBarsLife
+            label expiredLabel = array.remove(activePatternLabels, labelIdx)
+            array.remove(activePatternLabelBornBars, labelIdx)
+            label.delete(expiredLabel)
+        labelIdx -= 1
+    int boxIdx = array.size(activePatternBoxes) - 1
+    while boxIdx >= 0
+        int boxBornBar = array.get(activePatternBoxBornBars, boxIdx)
+        if bar_index - boxBornBar > maxBarsLife
+            box expiredBox = array.remove(activePatternBoxes, boxIdx)
+            array.remove(activePatternBoxBornBars, boxIdx)
+            box.delete(expiredBox)
+        boxIdx -= 1
+
+
+// =========================
+// Methods
+// =========================
+method resetPlan(TradePlan self) =>
+    self.dir := Direction.Flat
+    self.grade := SignalGrade.None
+    self.entry := na
+    self.stop := na
+    self.risk := na
+    self.tp1 := na
+    self.tp2 := na
+    self.tp3 := na
+    self.qty := na
+    self.originalTp1 := na
+    self.structuralTp1 := na
+    self.exitReason := ""
+    self.ctxKey := ""
+    self.ctxScore := na
+    self.ctxSamples := na
+    self.estBarsToTp1 := na
+    self.estBarsToStop := na
+    self.ready := false
+
+method clearPattern(PatternState self) =>
+    self.pType := PatternType.None
+    self.active := false
+    self.bullish := false
+    self.fakeout := false
+    self.breakoutLevel := na
+    self.target := na
+    self.relVolume := na
+    self.successProb := na
+    self.breakoutIndex := na
+    self.slope := na
+    self.degraded := false
+
+f_isBullPattern(PatternType pType) =>
+    pType == PatternType.BullFlag or pType == PatternType.BullPennant or pType == PatternType.TriangleBull or 
+      pType == PatternType.TriangleAscending or pType == PatternType.DoubleBottom or pType == PatternType.TripleBottom or 
+      pType == PatternType.InvHeadShoulders or pType == PatternType.WedgeFalling or pType == PatternType.WedgeFallingCont or 
+      pType == PatternType.WedgeBullish or pType == PatternType.RoundingBottom or pType == PatternType.CupHandle or 
+      pType == PatternType.ChannelRising
+
+method activatePattern(PatternState self, PatternType pType, bool bullishPattern, float breakoutLevel, float measuredTarget, float relVol) =>
+    self.pType := pType
+    self.active := true
+    self.bullish := bullishPattern
+    self.breakoutLevel := breakoutLevel
+    self.target := measuredTarget
+    self.relVolume := relVol
+    self.breakoutIndex := bar_index
+    self.fakeout := false
+    self.slope := (self.target - close) / math.max(projectionBars, 1)
+    self.degraded := false
+
+method destroyPattern(PatternGeometry self) =>
+    if array.size(self.lines) > 0
+        for i = 0 to array.size(self.lines) - 1
+            line.delete(array.get(self.lines, i))
+    if array.size(self.labels) > 0
+        for i = 0 to array.size(self.labels) - 1
+            label.delete(array.get(self.labels, i))
+    if array.size(self.boxes) > 0
+        for i = 0 to array.size(self.boxes) - 1
+            box.delete(array.get(self.boxes, i))
+    array.clear(self.lines)
+    array.clear(self.labels)
+    array.clear(self.boxes)
+
+method drawPattern(PatternGeometry self) =>
+    bool isBullPattern = f_isBullPattern(self.pType)
+    color patternColor = isBullPattern ? color.new(color.teal, 0) : color.new(color.maroon, 0)
+    int x0 = bar_index
+    float yBreak = self.breakoutPoint.price
+    float yTarget = self.measuredTarget
+    if self.pType == PatternType.HeadShoulders
+        bool hsCoordsOk = not na(self.ph2) and not na(self.ph1) and not na(self.ph0) and not na(self.pl0) and not na(self.pl1) and not na(self.ph2Bar) and not na(self.ph1Bar) and not na(self.ph0Bar) and not na(self.pl0Bar) and not na(self.pl1Bar) and not na(yTarget)
+        if hsCoordsOk
+            float neck = (self.pl0 + self.pl1) * 0.5
+            line lShoulder = line.new(self.ph2Bar, self.ph2, self.ph1Bar, self.ph1, xloc=xloc.bar_index, color=patternColor, width=2)
+            line rShoulder = line.new(self.ph1Bar, self.ph1, self.ph0Bar, self.ph0, xloc=xloc.bar_index, color=patternColor, width=2)
+            line neckLine = line.new(math.min(self.pl1Bar, self.pl0Bar), neck, x0 + projectionBars, neck, xloc=xloc.bar_index, color=color.new(color.olive, 0), width=2)
+            line targetLine = line.new(x0, neck, x0 + projectionBars, yTarget, xloc=xloc.bar_index, color=patternColor, style=line.style_dashed, width=2)
+            array.push(self.lines, lShoulder)
+            f_trackPatternLine(lShoulder, self.bornBar)
+            array.push(self.lines, rShoulder)
+            f_trackPatternLine(rShoulder, self.bornBar)
+            array.push(self.lines, neckLine)
+            f_trackPatternLine(neckLine, self.bornBar)
+            array.push(self.lines, targetLine)
+            f_trackPatternLine(targetLine, self.bornBar)
+    else if self.pType == PatternType.BullFlag or self.pType == PatternType.BearFlag
+        bool flagCoordsOk = not na(self.flagPoleStart) and not na(self.flagPoleEnd) and not na(self.flagChannelHigh) and not na(self.flagChannelLow) and not na(yBreak) and not na(yTarget)
+        if flagCoordsOk
+            bool bullFlagPattern = self.pType == PatternType.BullFlag
+            line pole = line.new(x0 - self.flagPoleOffset, self.flagPoleStart, x0 - self.flagPoleOffset, self.flagPoleEnd, xloc=xloc.bar_index, color=color.new(color.yellow, 0), width=3)
+            line upperChannel = line.new(x0 - flagWindow, self.flagChannelHigh, x0, self.flagChannelHigh + (bullFlagPattern ? -syminfo.mintick : syminfo.mintick), xloc=xloc.bar_index, color=patternColor, width=2)
+            line lowerChannel = line.new(x0 - flagWindow, self.flagChannelLow, x0, self.flagChannelLow + (bullFlagPattern ? -syminfo.mintick : syminfo.mintick), xloc=xloc.bar_index, color=patternColor, width=2)
+            line projection = line.new(x0, yBreak, x0 + projectionBars, yTarget, xloc=xloc.bar_index, color=patternColor, style=line.style_dashed, width=2)
+            array.push(self.lines, pole)
+            f_trackPatternLine(pole, self.bornBar)
+            array.push(self.lines, upperChannel)
+            f_trackPatternLine(upperChannel, self.bornBar)
+            array.push(self.lines, lowerChannel)
+            f_trackPatternLine(lowerChannel, self.bornBar)
+            array.push(self.lines, projection)
+            f_trackPatternLine(projection, self.bornBar)
+    else if self.pType == PatternType.TriangleBull or self.pType == PatternType.TriangleBear
+        bool triCoordsOk = not na(self.ph1) and not na(self.ph0) and not na(self.pl1) and not na(self.pl0) and not na(self.ph1Bar) and not na(self.ph0Bar) and not na(self.pl1Bar) and not na(self.pl0Bar) and self.ph0 < self.ph1 and self.pl0 > self.pl1 and self.ph0 > self.pl0 and not na(yBreak) and not na(yTarget)
+        if triCoordsOk
+            line upperTrend = line.new(self.ph1Bar, self.ph1, self.ph0Bar, self.ph0, xloc=xloc.bar_index, color=patternColor, width=2)
+            line lowerTrend = line.new(self.pl1Bar, self.pl1, self.pl0Bar, self.pl0, xloc=xloc.bar_index, color=patternColor, width=2)
+            line projection = line.new(x0, yBreak, x0 + projectionBars, yTarget, xloc=xloc.bar_index, color=patternColor, style=line.style_dashed, width=2)
+            array.push(self.lines, upperTrend)
+            f_trackPatternLine(upperTrend, self.bornBar)
+            array.push(self.lines, lowerTrend)
+            f_trackPatternLine(lowerTrend, self.bornBar)
+            array.push(self.lines, projection)
+            f_trackPatternLine(projection, self.bornBar)
+    if array.size(self.lines) == 0 and not na(yBreak) and not na(yTarget)
+        line genericProjection = line.new(x0, yBreak, x0 + projectionBars, yTarget, xloc=xloc.bar_index, color=patternColor, style=line.style_dashed, width=2)
+        array.push(self.lines, genericProjection)
+        f_trackPatternLine(genericProjection, self.bornBar)
+    if array.size(self.lines) > 0 and not na(yBreak) and not na(yTarget)
+        if not na(self.breakoutPoint.price)
+            float entryPrice = self.breakoutPoint.price
+            box entryBox = box.new(bar_index, entryPrice * 1.0005, bar_index + projectionBars, entryPrice * 0.9995, bgcolor=color.new(color.white, 85), border_color=color.new(color.white, 50), xloc=xloc.bar_index)
+            array.push(self.boxes, entryBox)
+            f_trackPatternBox(entryBox, self.bornBar)
+        if not na(self.measuredTarget)
+            box tpBox = box.new(bar_index + projectionBars - 1, self.measuredTarget * 1.001, bar_index + projectionBars + 2, self.measuredTarget * 0.999, bgcolor=isBullPattern ? color.new(color.teal, 70) : color.new(color.maroon, 70), border_color=isBullPattern ? color.new(color.teal, 20) : color.new(color.maroon, 20), xloc=xloc.bar_index)
+            array.push(self.boxes, tpBox)
+            f_trackPatternBox(tpBox, self.bornBar)
+        int arrowX = bar_index + int(projectionBars * 0.5)
+        float arrowY = isBullPattern ? self.measuredTarget : self.breakoutPoint.price
+        label arrowLabel = label.new(arrowX, arrowY, isBullPattern ? "▲ LONG" : "▼ SHORT", xloc=xloc.bar_index, style=isBullPattern ? label.style_arrowup : label.style_arrowdown, color=isBullPattern ? color.new(color.teal, 0) : color.new(color.maroon, 0), textcolor=color.white, size=size.normal)
+        array.push(self.labels, arrowLabel)
+        f_trackPatternLabel(arrowLabel, self.bornBar)
+        int labelX = x0 + projectionBars
+        float labelY = yTarget
+        int overlapCount = 0
+        if array.size(activePatternLabels) > 0
+            for i = 0 to array.size(activePatternLabels) - 1
+                label existingLabel = array.get(activePatternLabels, i)
+                bool sameLabelSpot = label.get_x(existingLabel) == labelX and math.abs(label.get_y(existingLabel) - yTarget) <= syminfo.mintick
+                overlapCount += sameLabelSpot ? 1 : 0
+        if overlapCount > 0
+            labelY := yTarget + (self.measuredTarget >= yBreak ? 2.0 * syminfo.mintick * overlapCount : -2.0 * syminfo.mintick * overlapCount)
+        label targetLabel = label.new(labelX, labelY, (self.measuredTarget >= yBreak ? "▲ " : "▼ ") + str.tostring(yTarget), xloc=xloc.bar_index, style=self.measuredTarget >= yBreak ? label.style_label_up : label.style_label_down, color=color.new(color.black, 15), textcolor=patternColor)
+        array.push(self.labels, targetLabel)
+        f_trackPatternLabel(targetLabel, self.bornBar)
+
+method logDecision(MarketState self, string phase, string reason) =>
+    log.info("[" + phase + "] status=" + str.tostring(self.status) + " | " + reason)
+
+// calculateStructuralTP removed — logic is inlined in buildPlan via structural cap.
+
+method updatePerception(MarketState self, int pLen, int liqLookbackBars, TrendState htfTrend) =>
+    float ph = ta.pivothigh(high, pLen, pLen)
+    float pl = ta.pivotlow(low, pLen, pLen)
+    float confirmedHighestLiq = ta.highest(high[1], liqLookbackBars)
+    float confirmedLowestLiq = ta.lowest(low[1], liqLookbackBars)
+
+    bool sweptHighNow = not na(confirmedHighestLiq) and high > confirmedHighestLiq and close < confirmedHighestLiq
+    bool sweptLowNow = not na(confirmedLowestLiq) and low < confirmedLowestLiq and close > confirmedLowestLiq
+
+    self.phase := AgentPhase.Perception
+    self.trend := htfTrend
+    if barstate.isconfirmed and not na(ph)
+        self.structure.lastSwingHigh := ph
+        self.structure.lastSwingHighIndex := bar_index - pLen
+    if barstate.isconfirmed and not na(pl)
+        self.structure.lastSwingLow := pl
+        self.structure.lastSwingLowIndex := bar_index - pLen
+    self.liq.sweptHigh := sweptHighNow
+    self.liq.sweptLow := sweptLowNow
+    self.liq.levelHigh := confirmedHighestLiq
+    self.liq.levelLow := confirmedLowestLiq
+    self.liq.barIndex := bar_index
+
+method updateReasoning(MarketState self, bool conservativeMode, float atrValue, int maxSequenceBars, bool requireSequence, int pLen) =>
+    self.phase := AgentPhase.Reasoning
+    
+    // Invalidate OB quickly (scalping)
+    if self.ob.valid and not na(self.ob.bornIndex) and bar_index - self.ob.bornIndex > 20
+        self.ob.valid := false
+
+    float bodyTop = math.max(open, close)
+    float bodyBottom = math.min(open, close)
+
+    float realtimeBreakHigh = ta.highest(high[1], pLen * 2)
+    float realtimeBreakLow = ta.lowest(low[1], pLen * 2)
+    bool bodyBreakUp = (not na(self.structure.lastSwingHigh) and bodyTop > self.structure.lastSwingHigh and bodyBottom > self.structure.lastSwingHigh) or (not na(realtimeBreakHigh) and bodyTop > realtimeBreakHigh and bodyBottom > realtimeBreakHigh)
+    bool bodyBreakDown = (not na(self.structure.lastSwingLow) and bodyBottom < self.structure.lastSwingLow and bodyTop < self.structure.lastSwingLow) or (not na(realtimeBreakLow) and bodyBottom < realtimeBreakLow and bodyTop < realtimeBreakLow)
+
+    bool prevBosBull = self.structure.bosBull
+    bool prevBosBear = self.structure.bosBear
+
+    self.structure.bosBull := bodyBreakUp
+    self.structure.bosBear := bodyBreakDown
+    self.structure.chochBull := bodyBreakUp and prevBosBear
+    self.structure.chochBear := bodyBreakDown and prevBosBull
+
+    // Naked FVG Scalping Logic
+    bool bullFvg = bar_index >= 2 and low > high[2]
+    bool bearFvg = bar_index >= 2 and high < low[2]
+    
+    float bodySize = math.abs(close - open)
+    bool bullDisp = close > open and bodySize > atrValue * 0.5
+    bool bearDisp = close < open and bodySize > atrValue * 0.5
+    
+    float volMa = ta.sma(volume, 20)
+    float relVol = volume / math.max(volMa, 1)
+    bool strongImpulse = relVol >= relVolumeThreshold
+
+    if bullFvg and (bullDisp or strongImpulse)
+        self.ob.valid := true
+        self.ob.bullish := true
+        self.ob.high := low
+        self.ob.low := high[2]
+        self.ob.bornIndex := bar_index
+        self.ob.displaced := true
+        self.ob.hasFvg := true
+    else if bearFvg and (bearDisp or strongImpulse)
+        self.ob.valid := true
+        self.ob.bullish := false
+        self.ob.high := low[2]
+        self.ob.low := high
+        self.ob.bornIndex := bar_index
+        self.ob.displaced := true
+        self.ob.hasFvg := true
+
+    // Invalidate if closed beyond
+    if self.ob.valid
+        if self.ob.bullish and close < self.ob.low
+            self.ob.valid := false
+        else if not self.ob.bullish and close > self.ob.high
+            self.ob.valid := false
+
+method updatePatternIntelligence(MarketState self, float atrValue, float relVol, int pivLen, int flagBars, float rvThreshold, float avgSlope, bool recentFlagLossPenalty, bool lowLiquidityPenalty) =>
+    bool newBullFlag = false
+    bool newBearFlag = false
+    bool newHs = false
+    bool newInvHnS = false
+    bool newTriUp = false
+    bool newTriDn = false
+    bool newBullPennant = false
+    bool newBearPennant = false
+    bool newDoubleBottom = false
+    bool newDoubleTop = false
+    bool newTripleBottom = false
+    bool newTripleTop = false
+    bool newAscTriangle = false
+    bool newDescTriangle = false
+    bool newFallingWedge = false
+    bool newRisingWedge = false
+    bool newCupHandle = false
+    bool newChannelRising = false
+    bool newChannelFalling = false
+    bool newRoundingBottom = false
+    bool newRoundingTop = false
+    bool newDiamondTop = false
+
+    // Flag logic: strong impulse + counter-trend mini-channel + breakout with RV
+    bool enoughFlagHistory = bar_index >= flagBars * 2
+    float flagLowest = ta.lowest(low, flagBars * 2)
+    float flagHighest = ta.highest(high, flagBars * 2)
+    float chHigh = ta.highest(high, flagBars)
+    float chLow = ta.lowest(low, flagBars)
+    float linregNow = ta.linreg(close, flagBars, 0)
+    float linregPrev = ta.linreg(close, flagBars, 1)
+    float impulseUp = close[flagBars] - flagLowest
+    float impulseDn = flagHighest - close[flagBars]
+    bool pullbackDown = linregNow < linregPrev
+    bool pullbackUp = linregNow > linregPrev
+
+    newBullFlag := barstate.isconfirmed and enoughFlagHistory and impulseUp > atrValue * 2.0 and pullbackDown and close > chHigh[1] and relVol > rvThreshold
+    newBearFlag := barstate.isconfirmed and enoughFlagHistory and impulseDn > atrValue * 2.0 and pullbackUp and close < chLow[1] and relVol > rvThreshold
+
+    // Head and Shoulders via stored confirmed pivots
+    float h1 = f_recentFloat(pivotHighPrices, 2)
+    float h2 = f_recentFloat(pivotHighPrices, 1)
+    float h3 = f_recentFloat(pivotHighPrices, 0)
+    float l0 = f_recentFloat(pivotLowPrices, 2)
+    float l1 = f_recentFloat(pivotLowPrices, 1)
+    float l2 = f_recentFloat(pivotLowPrices, 0)
+    float neck = (l1 + l2) * 0.5
+    bool shouldersSym = not na(h1) and not na(h3) and math.abs(h1 - h3) <= atrValue * 0.6
+    bool hsShape = not na(h2) and shouldersSym and h2 > h1 and h2 > h3
+    newHs := barstate.isconfirmed and hsShape and close < neck and relVol > rvThreshold
+
+    float ihsLs = f_recentFloat(pivotLowPrices, 2)
+    float ihsHead = f_recentFloat(pivotLowPrices, 1)
+    float ihsRs = f_recentFloat(pivotLowPrices, 0)
+    float ihsNeck = ta.highest(high[1], flagBars * 3)
+    bool ihsShape = not na(ihsLs) and not na(ihsHead) and not na(ihsRs) and ihsHead < ihsLs and ihsHead < ihsRs and math.abs(ihsLs - ihsRs) <= atrValue * 0.8
+    newInvHnS := barstate.isconfirmed and ihsShape and close > ihsNeck and relVol > rvThreshold
+
+    // Triangles and pennants via stored confirmed converging highs/lows and breakout
+    float th1 = f_recentFloat(pivotHighPrices, 1)
+    float th2 = f_recentFloat(pivotHighPrices, 0)
+    float tl1 = f_recentFloat(pivotLowPrices, 1)
+    float tl2 = f_recentFloat(pivotLowPrices, 0)
+    bool converging = not na(th1) and not na(th2) and not na(tl1) and not na(tl2) and th2 < th1 and tl2 > tl1 and th2 > tl2
+    newBullPennant := barstate.isconfirmed and enoughFlagHistory and converging and impulseUp > atrValue * 2.0 and close > th2 and relVol > rvThreshold
+    newBearPennant := barstate.isconfirmed and enoughFlagHistory and converging and impulseDn > atrValue * 2.0 and close < tl2 and relVol > rvThreshold
+    newTriUp := barstate.isconfirmed and converging and close > th2 and relVol > rvThreshold
+    newTriDn := barstate.isconfirmed and converging and close < tl2 and relVol > rvThreshold
+
+    float atHigh1 = f_recentFloat(pivotHighPrices, 1)
+    float atHigh2 = f_recentFloat(pivotHighPrices, 0)
+    float atLow1 = f_recentFloat(pivotLowPrices, 1)
+    float atLow2 = f_recentFloat(pivotLowPrices, 0)
+    bool horizontalRes = not na(atHigh1) and not na(atHigh2) and math.abs(atHigh1 - atHigh2) <= atrValue * 0.3
+    bool risingLows = not na(atLow1) and not na(atLow2) and atLow2 > atLow1
+    newAscTriangle := barstate.isconfirmed and horizontalRes and risingLows and close > atHigh2 and relVol > rvThreshold
+
+    float dtriHigh1 = f_recentFloat(pivotHighPrices, 1)
+    float dtriHigh2 = f_recentFloat(pivotHighPrices, 0)
+    float dtriLow1 = f_recentFloat(pivotLowPrices, 1)
+    float dtriLow2 = f_recentFloat(pivotLowPrices, 0)
+    bool horizontalSup = not na(dtriLow1) and not na(dtriLow2) and math.abs(dtriLow1 - dtriLow2) <= atrValue * 0.3
+    bool fallingHighs = not na(dtriHigh1) and not na(dtriHigh2) and dtriHigh2 < dtriHigh1
+    newDescTriangle := barstate.isconfirmed and horizontalSup and fallingHighs and close < dtriLow2 and relVol > rvThreshold
+
+    // Double/triple top-bottom reversal structures
+    float db1 = f_recentFloat(pivotLowPrices, 1)
+    float db2 = f_recentFloat(pivotLowPrices, 0)
+    float dbNeckline = ta.highest(high[1], flagBars * 2)
+    float dbRecentHigh = ta.highest(high, flagBars)
+    bool doubleBottomShape = not na(db1) and not na(db2) and math.abs(db1 - db2) <= atrValue * 0.5 and dbRecentHigh > db1 + atrValue * 1.5
+    newDoubleBottom := barstate.isconfirmed and doubleBottomShape and close > dbNeckline and relVol > rvThreshold
+
+    float dt1 = f_recentFloat(pivotHighPrices, 1)
+    float dt2 = f_recentFloat(pivotHighPrices, 0)
+    float dtNeckline = ta.lowest(low[1], flagBars * 2)
+    float dtRecentLow = ta.lowest(low, flagBars)
+    bool doubleTopShape = not na(dt1) and not na(dt2) and math.abs(dt1 - dt2) <= atrValue * 0.5 and dtRecentLow < dt1 - atrValue * 1.5
+    newDoubleTop := barstate.isconfirmed and doubleTopShape and close < dtNeckline and relVol > rvThreshold
+
+    float tb0 = f_recentFloat(pivotLowPrices, 2)
+    float tb1 = f_recentFloat(pivotLowPrices, 1)
+    float tb2 = f_recentFloat(pivotLowPrices, 0)
+    float tbNeckline = ta.highest(high[1], flagBars * 3)
+    bool tripleBottomShape = not na(tb0) and not na(tb1) and not na(tb2) and math.abs(tb0 - tb1) <= atrValue * 0.6 and math.abs(tb1 - tb2) <= atrValue * 0.6
+    newTripleBottom := barstate.isconfirmed and tripleBottomShape and close > tbNeckline and relVol > rvThreshold
+
+    float tt0 = f_recentFloat(pivotHighPrices, 2)
+    float tt1 = f_recentFloat(pivotHighPrices, 1)
+    float tt2 = f_recentFloat(pivotHighPrices, 0)
+    float ttNeckline = ta.lowest(low[1], flagBars * 3)
+    bool tripleTopShape = not na(tt0) and not na(tt1) and not na(tt2) and math.abs(tt0 - tt1) <= atrValue * 0.6 and math.abs(tt1 - tt2) <= atrValue * 0.6
+    newTripleTop := barstate.isconfirmed and tripleTopShape and close < ttNeckline and relVol > rvThreshold
+
+    // Wedges, channels and rounded/diamond formations use confirmed pivots and confirmed breakouts only.
+    float fwHigh1 = f_recentFloat(pivotHighPrices, 1)
+    float fwHigh2 = f_recentFloat(pivotHighPrices, 0)
+    float fwLow1 = f_recentFloat(pivotLowPrices, 1)
+    float fwLow2 = f_recentFloat(pivotLowPrices, 0)
+    float upperSlopeW = not na(fwHigh1) and not na(fwHigh2) ? fwHigh2 - fwHigh1 : na
+    float lowerSlopeW = not na(fwLow1) and not na(fwLow2) ? fwLow2 - fwLow1 : na
+    bool fallingWedgeShape = not na(upperSlopeW) and not na(lowerSlopeW) and upperSlopeW < 0 and lowerSlopeW < 0 and upperSlopeW < lowerSlopeW
+    newFallingWedge := barstate.isconfirmed and fallingWedgeShape and close > fwHigh2 and relVol > rvThreshold
+
+    float rwHigh1 = f_recentFloat(pivotHighPrices, 1)
+    float rwHigh2 = f_recentFloat(pivotHighPrices, 0)
+    float rwLow1 = f_recentFloat(pivotLowPrices, 1)
+    float rwLow2 = f_recentFloat(pivotLowPrices, 0)
+    float upperSlopeRW = not na(rwHigh1) and not na(rwHigh2) ? rwHigh2 - rwHigh1 : na
+    float lowerSlopeRW = not na(rwLow1) and not na(rwLow2) ? rwLow2 - rwLow1 : na
+    bool risingWedgeShape = not na(upperSlopeRW) and not na(lowerSlopeRW) and upperSlopeRW > 0 and lowerSlopeRW > 0 and lowerSlopeRW > upperSlopeRW
+    newRisingWedge := barstate.isconfirmed and risingWedgeShape and close < rwLow2 and relVol > rvThreshold
+
+    bool channelRisingShape = not na(th1) and not na(th2) and not na(tl1) and not na(tl2) and th2 > th1 and tl2 > tl1 and math.abs((th2 - th1) - (tl2 - tl1)) <= atrValue * 0.5
+    bool channelFallingShape = not na(th1) and not na(th2) and not na(tl1) and not na(tl2) and th2 < th1 and tl2 < tl1 and math.abs((th1 - th2) - (tl1 - tl2)) <= atrValue * 0.5
+    newChannelRising := barstate.isconfirmed and channelRisingShape and close > th2 and relVol > rvThreshold
+    newChannelFalling := barstate.isconfirmed and channelFallingShape and close < tl2 and relVol > rvThreshold
+
+    float cupLow = ta.lowest(low, flagBars * 4)
+    float cupNeck = ta.highest(high[1], flagBars * 4)
+    bool cupShape = enoughFlagHistory and not na(cupLow) and not na(cupNeck) and cupNeck - cupLow > atrValue * 2.0 and math.abs(close[flagBars] - cupNeck) <= atrValue * 1.5
+    newCupHandle := barstate.isconfirmed and cupShape and pullbackDown and close > cupNeck and relVol > rvThreshold
+
+    float roundingLow = ta.lowest(low, flagBars * 4)
+    float roundingHigh = ta.highest(high[1], flagBars * 4)
+    bool roundingBottomShape = enoughFlagHistory and close[flagBars * 2] <= roundingLow + atrValue and close > roundingHigh
+    newRoundingBottom := barstate.isconfirmed and roundingBottomShape and relVol > rvThreshold
+
+    float roundingTopHigh = ta.highest(high, flagBars * 4)
+    float roundingTopNeck = ta.lowest(low[1], flagBars * 4)
+    bool roundingTopShape = enoughFlagHistory and close[flagBars * 2] >= roundingTopHigh - atrValue and close < roundingTopNeck
+    newRoundingTop := barstate.isconfirmed and roundingTopShape and relVol > rvThreshold
+
+    bool diamondShape = not na(h1) and not na(h2) and not na(h3) and not na(l0) and not na(l1) and not na(l2) and h2 > h1 and h2 > h3 and l1 < l0 and l1 < l2
+    newDiamondTop := barstate.isconfirmed and diamondShape and close < l2 and relVol > rvThreshold
+
+    if newBullFlag
+        self.pattern.activatePattern(PatternType.BullFlag, true, chHigh[1], close + impulseUp, relVol)
+    else if newBearFlag
+        self.pattern.activatePattern(PatternType.BearFlag, false, chLow[1], close - impulseDn, relVol)
+    else if newBullPennant
+        self.pattern.activatePattern(PatternType.BullPennant, true, th2, close + impulseUp, relVol)
+    else if newBearPennant
+        self.pattern.activatePattern(PatternType.BearPennant, false, tl2, close - impulseDn, relVol)
+    else if newHs
+        self.pattern.activatePattern(PatternType.HeadShoulders, false, neck, neck - (h2 - neck), relVol)
+    else if newInvHnS
+        self.pattern.activatePattern(PatternType.InvHeadShoulders, true, ihsNeck, ihsNeck + (ihsNeck - ihsHead), relVol)
+    else if newDoubleBottom
+        self.pattern.activatePattern(PatternType.DoubleBottom, true, dbNeckline, dbNeckline + (dbNeckline - math.min(db1, db2)), relVol)
+    else if newDoubleTop
+        self.pattern.activatePattern(PatternType.DoubleTop, false, dtNeckline, dtNeckline - (math.max(dt1, dt2) - dtNeckline), relVol)
+    else if newTripleBottom
+        self.pattern.activatePattern(PatternType.TripleBottom, true, tbNeckline, tbNeckline + (tbNeckline - math.min(math.min(tb0, tb1), tb2)), relVol)
+    else if newTripleTop
+        self.pattern.activatePattern(PatternType.TripleTop, false, ttNeckline, ttNeckline - (math.max(math.max(tt0, tt1), tt2) - ttNeckline), relVol)
+    else if newAscTriangle
+        self.pattern.activatePattern(PatternType.TriangleAscending, true, atHigh2, atHigh2 + (atHigh1 - atLow1), relVol)
+    else if newDescTriangle
+        self.pattern.activatePattern(PatternType.TriangleDescending, false, dtriLow2, dtriLow2 - (dtriHigh1 - dtriLow1), relVol)
+    else if newTriUp
+        float triHeight = th1 - tl1
+        self.pattern.activatePattern(PatternType.TriangleBull, true, th2, close + triHeight, relVol)
+    else if newTriDn
+        float triHeight = th1 - tl1
+        self.pattern.activatePattern(PatternType.TriangleBear, false, tl2, close - triHeight, relVol)
+    else if newFallingWedge
+        PatternType fallingWedgeType = self.trend == TrendState.Bullish ? PatternType.WedgeFallingCont : PatternType.WedgeFalling
+        self.pattern.activatePattern(fallingWedgeType, true, fwHigh2, fwHigh1, relVol)
+    else if newRisingWedge
+        PatternType risingWedgeType = self.trend == TrendState.Bearish ? PatternType.WedgeRisingCont : PatternType.WedgeRising
+        self.pattern.activatePattern(risingWedgeType, false, rwLow2, rwLow1, relVol)
+    else if newCupHandle
+        self.pattern.activatePattern(PatternType.CupHandle, true, cupNeck, cupNeck + (cupNeck - cupLow), relVol)
+    else if newChannelRising
+        self.pattern.activatePattern(PatternType.ChannelRising, true, th2, th2 + math.max(th2 - tl2, syminfo.mintick), relVol)
+    else if newChannelFalling
+        self.pattern.activatePattern(PatternType.ChannelFalling, false, tl2, tl2 - math.max(th2 - tl2, syminfo.mintick), relVol)
+    else if newRoundingBottom
+        self.pattern.activatePattern(PatternType.RoundingBottom, true, roundingHigh, roundingHigh + (roundingHigh - roundingLow), relVol)
+    else if newRoundingTop
+        self.pattern.activatePattern(PatternType.RoundingTop, false, roundingTopNeck, roundingTopNeck - (roundingTopHigh - roundingTopNeck), relVol)
+    else if newDiamondTop
+        self.pattern.activatePattern(PatternType.DiamondTop, false, l2, l2 - (h2 - l1), relVol)
+
+    // Fakeout detection: breakout wick but close back inside pattern
+    float bodySize = math.abs(close - open)
+    float upperWick = high - math.max(open, close)
+    float lowerWick = math.min(open, close) - low
+
+    bool fakeoutBull = barstate.isconfirmed and self.pattern.active and self.pattern.bullish and high > self.pattern.breakoutLevel and close < self.pattern.breakoutLevel and upperWick > bodySize * 1.3
+    bool fakeoutBear = barstate.isconfirmed and self.pattern.active and not self.pattern.bullish and low < self.pattern.breakoutLevel and close > self.pattern.breakoutLevel and lowerWick > bodySize * 1.3
+
+    if fakeoutBull or fakeoutBear
+        self.pattern.fakeout := true
+        f_destroyPatternObjectsBorn(self.pattern.breakoutIndex)
+        log.info("[PATTERN] Fakeout detected; current geometry destroyed. Type=" + f_patternName(self.pattern.pType))
+        self.pattern.clearPattern()
+
+    // Probability by ATR regime (lower ATR ratio -> more stable continuation)
+    float atrRatio = atrValue / math.max(close, syminfo.mintick)
+    float volScore = relVol > rvThreshold ? 0.18 : 0.0
+    float slopeBoost = not na(avgSlope) and not na(self.pattern.slope) and math.sign(avgSlope) == math.sign(self.pattern.slope) ? 0.05 : 0.0
+    float penalty = recentFlagLossPenalty ? 0.12 : 0.0
+    float lowLiqPenalty = lowLiquidityPenalty ? 0.10 : 0.0
+    float baseProb = 0.52 + volScore + slopeBoost - math.min(atrRatio * 6.0, 0.22) - penalty - lowLiqPenalty
+    self.pattern.successProb := math.min(math.max(baseProb, 0.35), 0.86)
+    self.pattern.degraded := recentFlagLossPenalty or lowLiquidityPenalty
+
+method buildPlan(MarketState self, float atrValue, float slMult, float pTp1, float pTp2, float pTp3, bool conservativeMode, 
+      bool sessionOk, bool spacingOk, bool dayLimitOk, bool imbalanceGate, bool strongBreakoutVol, bool rsLongOk, float riskPct, 
+      bool pocLongOk, bool pocShortOk, bool riskGuardOk, bool bullCandleConfirm, bool bearCandleConfirm, bool contextOk, 
+      string ctxKey, float ctxScore, int ctxSamples, float similarityScore, int pMinEntryScore) =>
+    self.phase := AgentPhase.Planning
+    self.plan.resetPlan()
+
+    bool patternBullBoost = self.pattern.active and self.pattern.bullish and self.pattern.successProb >= 0.55 and not self.pattern.degraded
+    bool patternBearBoost = self.pattern.active and not self.pattern.bullish and self.pattern.successProb >= 0.55 and not self.pattern.degraded
+    float volatilityRatio = atrValue / math.max(close, syminfo.mintick)
+    bool volatilityOk = volatilityRatio >= 0.003
+
+    if self.ob.valid and sessionOk and spacingOk and dayLimitOk and riskGuardOk
+        bool trendLongOk = self.trend == TrendState.Bullish or (not conservativeMode and self.trend == TrendState.Neutral)
+        bool trendShortOk = self.trend == TrendState.Bearish or (not conservativeMode and self.trend == TrendState.Neutral)
+        int longScore = (trendLongOk ? 2 : 0) + (self.ob.displaced ? 1 : 0) + (self.ob.hasFvg ? 1 : 0) + (imbalanceGate ? 1 : 0) + (strongBreakoutVol ? 1 : 0) + (rsLongOk ? 1 : 0) + (pocLongOk ? 1 : 0) + (bullCandleConfirm ? 1 : 0) + (patternBullBoost ? 1 : 0) + (contextOk ? 1 : 0) + (volatilityOk ? 1 : 0)
+        int shortScore = (trendShortOk ? 2 : 0) + (self.ob.displaced ? 1 : 0) + (self.ob.hasFvg ? 1 : 0) + (imbalanceGate ? 1 : 0) + (strongBreakoutVol ? 1 : 0) + (pocShortOk ? 1 : 0) + (bearCandleConfirm ? 1 : 0) + (patternBearBoost ? 1 : 0) + (contextOk ? 1 : 0) + (volatilityOk ? 1 : 0)
+        int entryScoreThreshold = conservativeMode ? math.max(pMinEntryScore + 1, 6) : pMinEntryScore
+
+        // Fibonacci OTE Filter (відкат мінімум до 50% зони FVG)
+        bool isRetracement = bar_index > self.ob.bornIndex
+        float obMidpoint = (self.ob.high + self.ob.low) / 2.0
+        bool longFibOk = low <= obMidpoint
+        bool shortFibOk = high >= obMidpoint
+
+        if self.ob.bullish and low <= self.ob.high and high >= self.ob.low and longScore >= entryScoreThreshold and isRetracement and longFibOk
+            self.plan.dir := Direction.Long
+            float entrySlippageLong = syminfo.mintick * 3.0
+            float effectiveEntryLong = close + entrySlippageLong
+            self.plan.entry := effectiveEntryLong
+            self.plan.stop := math.min(self.ob.low, close - atrValue * slMult)
+            self.plan.risk := self.plan.entry - self.plan.stop
+            log.info("[PLANNING] Entry slippage guard: close=" + str.tostring(close) + ", effective=" + str.tostring(effectiveEntryLong))
+            float rrTp1Raw = self.plan.entry + self.plan.risk * pTp1
+            float rrTp2Raw = self.plan.entry + self.plan.risk * pTp2
+            float swingTarget = not na(self.structure.lastSwingHigh) and self.structure.lastSwingHigh > self.plan.entry ? self.structure.lastSwingHigh : rrTp1Raw
+            self.plan.originalTp1 := self.plan.entry + self.plan.risk * pTp1
+            self.plan.structuralTp1 := math.min(rrTp1Raw, swingTarget)
+            self.plan.tp1 := self.plan.structuralTp1
+            self.plan.tp2 := math.max(self.plan.tp1 + syminfo.mintick, math.min(rrTp2Raw, swingTarget > self.plan.tp1 ? swingTarget : rrTp2Raw))
+            self.plan.tp3 := self.plan.entry + self.plan.risk * pTp3
+            self.diag.originalTp1 := self.plan.originalTp1
+            self.diag.adjustedTp1 := self.plan.tp1
+            self.diag.lastTpAdjustment := "TP1 structural cap: " + str.tostring(self.plan.originalTp1) + " → " + str.tostring(self.plan.tp1)
+            self.plan.grade := self.ob.displaced and self.ob.hasFvg and strongBreakoutVol and pocLongOk and bullCandleConfirm ? SignalGrade.A : SignalGrade.B
+            float riskCash = strategy.equity * riskPct * 0.01
+            float simMultiplier = not na(similarityScore) ? math.min(math.max(0.75 + similarityScore * 0.5, 0.75), 1.25) : 1.0
+            float volRatio = atrValue / math.max(close, syminfo.mintick)
+            float volMultiplier = volRatio > 0.02 ? 0.7 : 1.0
+            self.plan.qty := (riskCash / math.max(self.plan.risk, syminfo.mintick)) * simMultiplier * volMultiplier
+            float movePerBar = math.max(atrValue * 0.45, syminfo.mintick)
+            self.plan.estBarsToTp1 := int(math.ceil((self.plan.tp1 - self.plan.entry) / movePerBar))
+            self.plan.estBarsToStop := int(math.ceil((self.plan.entry - self.plan.stop) / movePerBar))
+            if self.plan.estBarsToTp1 > 20
+                self.plan.tp1 := self.plan.entry + self.plan.risk * 0.4
+                self.plan.structuralTp1 := self.plan.tp1
+                self.plan.grade := SignalGrade.B
+                self.plan.estBarsToTp1 := int(math.ceil((self.plan.tp1 - self.plan.entry) / movePerBar))
+                self.diag.lastTpAdjustment := "TP1 scaled to 0.4R because estBarsToTp1 > 20"
+            self.plan.ctxKey := ctxKey
+            self.plan.ctxScore := ctxScore
+            self.plan.ctxSamples := ctxSamples
+            self.plan.ready := self.plan.risk > syminfo.mintick and self.plan.qty > 0
+            self.diag.lastBlockReason := "Score L=" + str.tostring(longScore) + "/" + str.tostring(entryScoreThreshold)
+        else if not self.ob.bullish and low <= self.ob.high and high >= self.ob.low and shortScore >= entryScoreThreshold and isRetracement and shortFibOk
+            self.plan.dir := Direction.Short
+            float entrySlippageShort = syminfo.mintick * 3.0
+            float effectiveEntryShort = close - entrySlippageShort
+            self.plan.entry := effectiveEntryShort
+            self.plan.stop := math.max(self.ob.high, close + atrValue * slMult)
+            self.plan.risk := self.plan.stop - self.plan.entry
+            log.info("[PLANNING] Entry slippage guard: close=" + str.tostring(close) + ", effective=" + str.tostring(effectiveEntryShort))
+            float rrTp1Raw = self.plan.entry - self.plan.risk * pTp1
+            float rrTp2Raw = self.plan.entry - self.plan.risk * pTp2
+            float swingTarget = not na(self.structure.lastSwingLow) and self.structure.lastSwingLow < self.plan.entry ? self.structure.lastSwingLow : rrTp1Raw
+            self.plan.originalTp1 := self.plan.entry - self.plan.risk * pTp1
+            self.plan.structuralTp1 := math.max(rrTp1Raw, swingTarget)
+            self.plan.tp1 := self.plan.structuralTp1
+            self.plan.tp2 := math.min(self.plan.tp1 - syminfo.mintick, math.max(rrTp2Raw, swingTarget < self.plan.tp1 ? swingTarget : rrTp2Raw))
+            self.plan.tp3 := self.plan.entry - self.plan.risk * pTp3
+            self.diag.originalTp1 := self.plan.originalTp1
+            self.diag.adjustedTp1 := self.plan.tp1
+            self.diag.lastTpAdjustment := "TP1 structural cap: " + str.tostring(self.plan.originalTp1) + " → " + str.tostring(self.plan.tp1)
+            self.plan.grade := self.ob.displaced and self.ob.hasFvg and strongBreakoutVol and pocShortOk and bearCandleConfirm ? SignalGrade.A : SignalGrade.B
+            float riskCash = strategy.equity * riskPct * 0.01
+            float simMultiplier = not na(similarityScore) ? math.min(math.max(0.75 + similarityScore * 0.5, 0.75), 1.25) : 1.0
+            float volRatio = atrValue / math.max(close, syminfo.mintick)
+            float volMultiplier = volRatio > 0.02 ? 0.7 : 1.0
+            self.plan.qty := (riskCash / math.max(self.plan.risk, syminfo.mintick)) * simMultiplier * volMultiplier
+            float movePerBar = math.max(atrValue * 0.45, syminfo.mintick)
+            self.plan.estBarsToTp1 := int(math.ceil((self.plan.entry - self.plan.tp1) / movePerBar))
+            self.plan.estBarsToStop := int(math.ceil((self.plan.stop - self.plan.entry) / movePerBar))
+            if self.plan.estBarsToTp1 > 20
+                self.plan.tp1 := self.plan.entry - self.plan.risk * 0.4
+                self.plan.structuralTp1 := self.plan.tp1
+                self.plan.grade := SignalGrade.B
+                self.plan.estBarsToTp1 := int(math.ceil((self.plan.entry - self.plan.tp1) / movePerBar))
+                self.diag.lastTpAdjustment := "TP1 scaled to 0.4R because estBarsToTp1 > 20"
+            self.plan.ctxKey := ctxKey
+            self.plan.ctxScore := ctxScore
+            self.plan.ctxSamples := ctxSamples
+            self.plan.ready := self.plan.risk > syminfo.mintick and self.plan.qty > 0
+            self.diag.lastBlockReason := "Score S=" + str.tostring(shortScore) + "/" + str.tostring(entryScoreThreshold)
+
+// =========================
+// Diagnostic Webhook Alert
+// =========================
+method send_signal_alert(MarketState self, string alertType, string msg="") =>
+    string p1 = "{\"type\": \"" + alertType + "\", \"ticker\": \"" + syminfo.ticker + "\", "
+    string p2 = "\"tf\": \"" + timeframe.period + "\", \"price\": " + str.tostring(close) + ", "
+    string p3 = "\"time\": " + str.tostring(time) + ", \"trend\": \"" + str.tostring(self.trend) + "\", "
+    string p4 = "\"status\": \"" + str.tostring(self.status) + "\", \"plan\": {"
+    string p5 = "\"dir\": \"" + str.tostring(self.plan.dir) + "\", \"grade\": \"" + str.tostring(self.plan.grade) + "\", "
+    string p6 = "\"entry\": " + str.tostring(self.plan.entry) + ", \"stop\": " + str.tostring(self.plan.stop) + ", "
+    string p7 = "\"tp1\": " + str.tostring(self.plan.tp1) + ", \"tp2\": " + str.tostring(self.plan.tp2) + ", "
+    string p8 = "\"qty\": " + str.tostring(self.plan.qty) + ", \"score\": " + str.tostring(self.plan.ctxScore) + ", "
+    string p9 = "\"samples\": " + str.tostring(self.plan.ctxSamples) + "}, \"diag\": {"
+    string p10 = "\"blockReason\": \"" + self.diag.lastBlockReason + "\", "
+    string p11 = "\"pattern\": \"" + f_patternName(self.pattern.pType) + "\", "
+    string p12 = "\"prob\": " + str.tostring(self.pattern.successProb) + "}, "
+    string p13 = "\"msg\": \"" + msg + "\"}"
+    string json = p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9 + p10 + p11 + p12 + p13
+    alert(json, alert.freq_once_per_bar)
+
+
+method execute(MarketState self, bool enabled, int cdBars, float volatilitySnapshot, float longTrailStop, float shortTrailStop) =>
+    self.phase := AgentPhase.Execution
+
+    bool canEnter = enabled and barstate.isconfirmed and self.status != AgentStatus.InPosition and self.status != AgentStatus.Cooldown
+
+    if canEnter and self.plan.ready
+        if self.plan.dir == Direction.Long
+            float initLongTrailStop = math.max(self.plan.stop, longTrailStop)
+            strategy.entry("L", strategy.long, qty=self.plan.qty)
+            strategy.exit("L-TP2-INIT", "L", limit=self.plan.tp2, stop=self.plan.stop)
+            strategy.exit("L-CHAND-INIT", "L", stop=initLongTrailStop)
+            self.status := AgentStatus.InPosition
+            self.tradeOpenBar := bar_index
+            self.lastSignalBar := bar_index
+            self.signalsToday := self.signalsToday + 1
+            self.lastIdeaGrade := str.tostring(self.plan.grade)
+            self.lastIdeaRr := self.plan.risk > syminfo.mintick ? (self.plan.tp1 - self.plan.entry) / self.plan.risk : na
+            self.lastIdeaTarget := self.plan.tp1
+            log.info("[EXECUTION] LONG, grade=" + str.tostring(self.plan.grade) + ", estBarsTP1=" + str.tostring(self.plan.estBarsToTp1))
+            self.send_signal_alert("ENTRY", "Long SMC Setup")
+
+        else if self.plan.dir == Direction.Short
+            float initShortTrailStop = math.min(self.plan.stop, shortTrailStop)
+            strategy.entry("S", strategy.short, qty=self.plan.qty)
+            strategy.exit("S-TP2-INIT", "S", limit=self.plan.tp2, stop=self.plan.stop)
+            strategy.exit("S-CHAND-INIT", "S", stop=initShortTrailStop)
+            self.status := AgentStatus.InPosition
+            self.tradeOpenBar := bar_index
+            self.lastSignalBar := bar_index
+            self.signalsToday := self.signalsToday + 1
+            self.lastIdeaGrade := str.tostring(self.plan.grade)
+            self.lastIdeaRr := self.plan.risk > syminfo.mintick ? (self.plan.entry - self.plan.tp1) / self.plan.risk : na
+            self.lastIdeaTarget := self.plan.tp1
+            log.info("[EXECUTION] SHORT, grade=" + str.tostring(self.plan.grade) + ", estBarsTP1=" + str.tostring(self.plan.estBarsToTp1))
+            self.send_signal_alert("ENTRY", "Short SMC Setup")
+
+
+    bool flatNow = strategy.position_size == 0
+    if self.status == AgentStatus.InPosition and flatNow
+        int winTag = (self.plan.dir == Direction.Long and close >= self.plan.entry) or (self.plan.dir == Direction.Short and close <= self.plan.entry) ? 1 : 0
+        self.todayClosed := self.todayClosed + 1
+        self.todayWins := self.todayWins + winTag
+        if self.pattern.pType != PatternType.None and not na(self.pattern.slope)
+            array.push(recentPatternSlopes, self.pattern.slope)
+            array.push(recentPatternWins, winTag)
+            array.push(recentPatternTypes, f_patternName(self.pattern.pType))
+            array.push(recentPatternVolatility, volatilitySnapshot)
+            if array.size(recentPatternSlopes) > 10
+                array.shift(recentPatternSlopes)
+                array.shift(recentPatternWins)
+                array.shift(recentPatternTypes)
+                array.shift(recentPatternVolatility)
+            if winTag == 1 and (self.pattern.pType == PatternType.TriangleBull or self.pattern.pType == PatternType.TriangleBear)
+                array.push(triangleFeatureSlopes, self.pattern.slope / math.max(close, syminfo.mintick))
+                array.push(triangleFeatureVolumes, self.pattern.relVolume)
+                array.push(triangleFeatureProbs, self.pattern.successProb)
+                if array.size(triangleFeatureSlopes) > 10
+                    array.shift(triangleFeatureSlopes)
+                    array.shift(triangleFeatureVolumes)
+                    array.shift(triangleFeatureProbs)
+        if str.length(self.plan.ctxKey) > 0
+            if not map.contains(contextCountMap, self.plan.ctxKey)
+                array.push(contextKeys, self.plan.ctxKey)
+                if array.size(contextKeys) > 30
+                    string oldContextKey = array.shift(contextKeys)
+                    map.remove(contextCountMap, oldContextKey)
+                    map.remove(contextWinsMap, oldContextKey)
+                    map.remove(contextScoreMap, oldContextKey)
+            int currCount = map.contains(contextCountMap, self.plan.ctxKey) ? map.get(contextCountMap, self.plan.ctxKey) : 0
+            int currWins = map.contains(contextWinsMap, self.plan.ctxKey) ? map.get(contextWinsMap, self.plan.ctxKey) : 0
+            int nextCount = currCount + 1
+            int nextWins = currWins + winTag
+            float nextScore = nextWins / nextCount
+            map.put(contextCountMap, self.plan.ctxKey, nextCount)
+            map.put(contextWinsMap, self.plan.ctxKey, nextWins)
+            map.put(contextScoreMap, self.plan.ctxKey, nextScore)
+        self.send_signal_alert("EXIT", "Position closed. Reason: " + self.plan.exitReason)
+        self.status := AgentStatus.Cooldown
+
+        self.cooldownLeft := cdBars + 1
+        self.tradeOpenBar := na
+        log.info("[EXIT] Position closed; cooldown start")
+
+    if self.status == AgentStatus.Cooldown
+        self.cooldownLeft := math.max(self.cooldownLeft - 1, 0)
+        if self.cooldownLeft == 0
+            self.status := AgentStatus.Idle
+
+// =========================
+// Initial State
+// =========================
+var OrderBlock initOb = OrderBlock.new(false, true, na, na, na, false, false)
+var LiquidityState initLiq = LiquidityState.new(false, false, na, na, na)
+var StructureState initStructure = StructureState.new(na, na, na, na, false, false, false, false, false, false)
+var ImbalanceModel initImbalanceModel = ImbalanceModel.new(false, false, false, false, true, false, na, na, na, na, na, "Waiting")
+var PatternState initPattern = PatternState.new(PatternType.None, false, false, false, na, na, na, na, na, na, false)
+var Diagnostics initDiag = Diagnostics.new("", "", na, na, 0)
+var TradePlan initPlan = TradePlan.new(Direction.Flat, SignalGrade.None, na, na, na, na, na, na, na, na, na, "", "", na, na, na, na, false)
+var MarketState state = MarketState.new(AgentPhase.Perception, TrendState.Neutral, AgentStatus.Idle, initOb, initLiq, initStructure, initImbalanceModel, initPattern, initDiag, initPlan, 0, na, 0, na, true, 0, 0, 0.0, 0.0, false, na, na, "n/a", na, na, "n/a", na, na, na)
+
+var polyline structureLine = na
+var array<chart.point> structurePoints = array.new<chart.point>()
+var table dash = table.new(position.bottom_right, 2, 18, bgcolor=color.new(color.black, 20), border_color=color.new(color.gray, 80), border_width=1)
+var array<box> obBoxes = array.new<box>()
+var array<color> obBoxColors = array.new<color>()
+var array<box> fvgBoxes = array.new<box>()
+var line entryLine = na
+var line stopLine = na
+var line tp1Line = na
+var line tp2Line = na
+var line tp3Line = na
+var label planLabel = na
+var label stopLabel = na
+var label tp1Label = na
+var label tp2Label = na
+var label tp3Label = na
+var array<label> signalLabels = array.new_label()
+var bool movedToBreakEven = false
+var int lastConfluenceLabelBar = na
+
+// =========================
+// Main Flow
+// =========================
+bool inLondon = not na(time(timeframe.period, londonSession))
+bool inNewYork = not na(time(timeframe.period, newYorkSession))
+bool inAsia = not na(time(timeframe.period, asiaSession))
+bool sessionOk = (useLondon and inLondon) or (useNewYork and inNewYork) or (useAsia and inAsia)
+if not useLondon and not useNewYork and not useAsia
+    sessionOk := true
+
+int today = dayofmonth(time)
+if na(state.signalDay) or state.signalDay != today
+    state.signalDay := today
+    state.signalsToday := 0
+    state.todayWins := 0
+    state.todayClosed := 0
+    state.sessionPeakEq := strategy.equity
+    state.sessionMaxDd := 0.0
+    state.riskExceeded := false
+
+bool spacingOk = na(state.lastSignalBar) or (bar_index - state.lastSignalBar >= minBarsBetweenSignals)
+bool dayLimitOk = state.signalsToday < maxSignalsPerDay
+bool conservativeMode = mode == "Conservative"
+bool nyOpenBurst = not na(time(timeframe.period, nyOpenBurstSession))
+[htfClose, htfMa] = request.security(syminfo.tickerid, htfTf, [close, ta.ema(close, 50)], lookahead=barmerge.lookahead_off)
+TrendState htfTrend = htfClose > htfMa ? TrendState.Bullish : htfClose < htfMa ? TrendState.Bearish : TrendState.Neutral
+
+float atrV = ta.atr(atrLen)
+float atrBase = ta.sma(ta.atr(atrLen), 20)
+float longChandelierStop = ta.highest(high, chandelierLen) - atrV * chandelierAtrMult
+float shortChandelierStop = ta.lowest(low, chandelierLen) + atrV * chandelierAtrMult
+bool highVolAnomaly = atrV > atrBase * 1.25
+float dynamicSlMult = riskAtrMult * (nyOpenBurst and highVolAnomaly ? nySlExpandFactor : 1.0)
+float volMa = ta.sma(volume, 20)
+float relVol = volume / math.max(volMa, 1)
+bool strongBreakoutVol = relVol >= 2.0
+
+// Local bar imbalance proxy (LTF request removed to stay within 3 security calls).
+float localBuyVol = close > open ? volume : 0.0
+float localSellVol = close < open ? volume : 0.0
+float imbalanceRatio = math.max(localBuyVol, localSellVol) / math.max(math.min(localBuyVol, localSellVol), 1.0)
+bool emptyVolume = volMa <= 0
+state.imbalanceOk := imbalanceRatio >= imbalanceThreshold and not emptyVolume
+
+string corrSymbol = corrMode == "DXY" ? dxySymbol : btcDomSymbol
+float corrSeries = request.security(corrSymbol, timeframe.period, close, lookahead=barmerge.lookahead_off)
+float corrTrendPct = 0.0
+if bar_index >= corrLookback
+    float corrBase = corrSeries[corrLookback]
+    corrTrendPct := (corrSeries / math.max(corrBase, syminfo.mintick) - 1.0) * 100.0
+bool corrRiskUp = corrTrendPct > 0.35
+
+float btcRefClose = request.security(btcRefSymbol, timeframe.period, close, lookahead=barmerge.lookahead_off)
+float assetRet = 0.0
+float btcRet = 0.0
+if bar_index >= rsLookback
+    float assetBase = close[rsLookback]
+    float btcBase = btcRefClose[rsLookback]
+    assetRet := close / math.max(assetBase, syminfo.mintick) - 1.0
+    btcRet := btcRefClose / math.max(btcBase, syminfo.mintick) - 1.0
+float relStrength = assetRet - btcRet
+bool isAltSymbol = not str.contains(str.upper(syminfo.ticker), "BTC")
+bool rsLongOk = not isAltSymbol or relStrength >= rsLongThreshold
+
+state.sessionPeakEq := math.max(state.sessionPeakEq, strategy.equity)
+float currDd = (state.sessionPeakEq - strategy.equity) / math.max(state.sessionPeakEq, 1.0)
+state.sessionMaxDd := math.max(state.sessionMaxDd, currDd)
+bool recoveryMode = state.sessionMaxDd > 0 and currDd < state.sessionMaxDd * 0.5
+if recoveryMode
+    if state.riskExceeded
+        log.info("[RISKGUARD] Recovery triggered at DD=" + str.tostring(currDd) + ", max was=" + str.tostring(state.sessionMaxDd))
+    state.riskExceeded := false
+else
+    state.riskExceeded := state.sessionMaxDd >= maxSessionDdPct * 0.01
+
+// POC proxy of last consolidation (highest-volume bar close in lookback)
+float pocLevel = close
+float maxVolInRange = 0.0
+int safePocLookback = int(math.min(pocLookback, bar_index + 1))
+if safePocLookback > 0
+    for i = 0 to safePocLookback - 1
+        float v = volume[i]
+        if v > maxVolInRange
+            maxVolInRange := v
+            pocLevel := close[i]
+state.pocLevel := pocLevel
+bool pocLongOk = close > pocLevel
+bool pocShortOk = close < pocLevel
+// Candlestick confirmations are stored only after confirmed bars to avoid tick-level repaint.
+float prevBodyHigh = math.max(open[1], close[1])
+float prevBodyLow = math.min(open[1], close[1])
+bool rawBullEngulf = close > open and close >= prevBodyHigh and open <= prevBodyLow
+bool rawBearEngulf = close < open and close <= prevBodyLow and open >= prevBodyHigh
+float bodySizeNow = math.abs(close - open)
+float lowerWickNow = math.min(open, close) - low
+float upperWickNow = high - math.max(open, close)
+bool rawHammer = lowerWickNow > bodySizeNow * 1.5 and upperWickNow < bodySizeNow
+bool rawShootingStar = upperWickNow > bodySizeNow * 1.5 and lowerWickNow < bodySizeNow
+bool rawMorningStar = close[2] < open[2] and math.abs(close[1] - open[1]) < math.abs(close[2] - open[2]) * 0.5 and close > open and close > (open[2] + close[2]) * 0.5
+bool rawEveningStar = close[2] > open[2] and math.abs(close[1] - open[1]) < math.abs(close[2] - open[2]) * 0.5 and close < open and close < (open[2] + close[2]) * 0.5
+var bool bullCandleConfirm = false
+var bool bearCandleConfirm = false
+if barstate.isconfirmed
+    bullCandleConfirm := rawBullEngulf or rawHammer or rawMorningStar
+    bearCandleConfirm := rawBearEngulf or rawShootingStar or rawEveningStar
+
+float eqPivotHigh = ta.pivothigh(high, swingLen, swingLen)
+float eqPivotLow = ta.pivotlow(low, swingLen, swingLen)
+float geomPivotHigh = ta.pivothigh(high, patternPivotLen, patternPivotLen)
+float geomPivotLow = ta.pivotlow(low, patternPivotLen, patternPivotLen)
+if barstate.isconfirmed
+    f_pushPivot(eqHighPrices, eqHighBars, eqPivotHigh, bar_index - swingLen, 20)
+    f_pushPivot(eqLowPrices, eqLowBars, eqPivotLow, bar_index - swingLen, 20)
+    f_pushPivot(pivotHighPrices, pivotHighBars, geomPivotHigh, bar_index - patternPivotLen, 20)
+    f_pushPivot(pivotLowPrices, pivotLowBars, geomPivotLow, bar_index - patternPivotLen, 20)
+float lastEqHigh = f_recentFloat(eqHighPrices, 0)
+float prevEqHigh = f_recentFloat(eqHighPrices, 1)
+float lastEqLow = f_recentFloat(eqLowPrices, 0)
+float prevEqLow = f_recentFloat(eqLowPrices, 1)
+float eqhLevel = not na(lastEqHigh) and not na(prevEqHigh) and math.abs(lastEqHigh - prevEqHigh) / math.max(close, syminfo.mintick) <= eqTolerancePct * 0.01 ? (lastEqHigh + prevEqHigh) * 0.5 : na
+float eqlLevel = not na(lastEqLow) and not na(prevEqLow) and math.abs(lastEqLow - prevEqLow) / math.max(close, syminfo.mintick) <= eqTolerancePct * 0.01 ? (lastEqLow + prevEqLow) * 0.5 : na
+
+float geomPh0 = f_recentFloat(pivotHighPrices, 0)
+float geomPh1 = f_recentFloat(pivotHighPrices, 1)
+float geomPh2 = f_recentFloat(pivotHighPrices, 2)
+float geomPl0 = f_recentFloat(pivotLowPrices, 0)
+float geomPl1 = f_recentFloat(pivotLowPrices, 1)
+int geomPh0Bar = f_recentInt(pivotHighBars, 0)
+int geomPh1Bar = f_recentInt(pivotHighBars, 1)
+int geomPh2Bar = f_recentInt(pivotHighBars, 2)
+int geomPl0Bar = f_recentInt(pivotLowBars, 0)
+int geomPl1Bar = f_recentInt(pivotLowBars, 1)
+float drawFlagChannelHigh = ta.highest(high, flagWindow)
+float drawFlagChannelLow = ta.lowest(low, flagWindow)
+
+float triangleSimilarity = na
+int triMemorySize = array.size(triangleFeatureSlopes)
+if useSimilaritySizing and state.pattern.active and (state.pattern.pType == PatternType.TriangleBull or state.pattern.pType == PatternType.TriangleBear) and triMemorySize > 0
+    float simSum = 0.0
+    float currSlopeNorm = state.pattern.slope / math.max(close, syminfo.mintick)
+    for i = 0 to triMemorySize - 1
+        float dSlope = currSlopeNorm - array.get(triangleFeatureSlopes, i)
+        float dVol = state.pattern.relVolume - array.get(triangleFeatureVolumes, i)
+        float dProb = state.pattern.successProb - array.get(triangleFeatureProbs, i)
+        // Scale slope by 1M to normalize magnitude against volume (1-5) and probability (0-1).
+        float dist = math.sqrt(dSlope * dSlope * 1000000.0 + dVol * dVol + dProb * dProb)
+        simSum += 1.0 / (1.0 + dist)
+    triangleSimilarity := simSum / triMemorySize
+state.similarityScore := triangleSimilarity
+
+int slopeCount = array.size(recentPatternSlopes)
+int useSlopeCount = math.min(slopeCount, 5)
+float avgSlope = na
+if useSlopeCount > 0
+    float slopeSum = 0.0
+    for i = 0 to useSlopeCount - 1
+        int idx = slopeCount - 1 - i
+        slopeSum += array.get(recentPatternSlopes, idx)
+    avgSlope := slopeSum / useSlopeCount
+
+bool flagPenalty = false
+int storedCount = array.size(recentPatternTypes)
+if storedCount >= 3
+    string t0 = array.get(recentPatternTypes, storedCount - 1)
+    string t1 = array.get(recentPatternTypes, storedCount - 2)
+    string t2 = array.get(recentPatternTypes, storedCount - 3)
+    int w0 = array.get(recentPatternWins, storedCount - 1)
+    int w1 = array.get(recentPatternWins, storedCount - 2)
+    int w2 = array.get(recentPatternWins, storedCount - 3)
+    float v0 = array.get(recentPatternVolatility, storedCount - 1)
+    float v1 = array.get(recentPatternVolatility, storedCount - 2)
+    float v2 = array.get(recentPatternVolatility, storedCount - 3)
+    bool threeFlags = (t0 == "Бичачий прапор" or t0 == "Ведмежий прапор") and (t1 == "Бичачий прапор" or t1 == "Ведмежий прапор") and (t2 == "Бичачий прапор" or t2 == "Ведмежий прапор")
+    bool threeLoss = w0 == 0 and w1 == 0 and w2 == 0
+    bool highVolLoss = v0 > 0.02 and v1 > 0.02 and v2 > 0.02
+    flagPenalty := threeFlags and threeLoss and highVolLoss
+
+string sessionTag = inLondon ? "London" : inNewYork ? "NewYork" : inAsia ? "Asia" : "Off"
+string ctxKey = f_contextKey(state.pattern.pType, state.liq.sweptHigh, state.liq.sweptLow, state.trend, rsLongOk, state.imbalanceOk, pocLongOk, pocShortOk, sessionTag)
+float ctxScore = map.contains(contextScoreMap, ctxKey) ? map.get(contextScoreMap, ctxKey) : na
+int ctxSamples = map.contains(contextCountMap, ctxKey) ? map.get(contextCountMap, ctxKey) : 0
+bool contextOk = not useContextScoring or ctxSamples < minContextSamples or (not na(ctxScore) and ctxScore >= minContextScore)
+bool btcDomBlocksAltLong = corrMode == "BTC.D" and corrTrendPct > 0.35 and isAltSymbol
+bool btcDomPermitsAltLong = corrMode == "BTC.D" and corrTrendPct < -0.35 and isAltSymbol
+bool corrBlocksAltLong = ((corrMode == "DXY" and corrRiskUp) or btcDomBlocksAltLong) and isAltSymbol
+bool entryRsLongOk = rsLongOk and not corrBlocksAltLong
+float volatilitySnapshot = atrV / math.max(close, syminfo.mintick)
+float imbalanceVolFactor = math.min(math.max(atrV / math.max(atrBase, syminfo.mintick), 1.0), 2.0)
+int adaptiveImbalanceSequenceBars = int(math.round(maxImbalanceSequenceBars * imbalanceVolFactor))
+
+state.updatePerception(swingLen, liquidityLookback, htfTrend)
+state.updatePatternIntelligence(atrV, relVol, patternPivotLen, flagWindow, relVolumeThreshold, avgSlope, flagPenalty, emptyVolume)
+state.updateReasoning(conservativeMode, atrV, adaptiveImbalanceSequenceBars, useImbalanceSequence, swingLen)
+
+if barstate.isconfirmed
+    state.logDecision("PERCEPTION", "trend=" + str.tostring(state.trend) + ", sweepHigh=" + str.tostring(state.liq.sweptHigh) + ", sweepLow=" + str.tostring(state.liq.sweptLow) + ", session=" + sessionTag)
+    state.logDecision("REASONING", "OB valid=" + str.tostring(state.ob.valid) + ", displaced=" + str.tostring(state.ob.displaced) + ", FVG=" + str.tostring(state.ob.hasFvg) + ", stage=" + state.imbalanceModel.stage)
+    ctxKey := f_contextKey(state.pattern.pType, state.liq.sweptHigh, state.liq.sweptLow, state.trend, entryRsLongOk, state.imbalanceOk, pocLongOk, pocShortOk, sessionTag)
+    ctxScore := map.contains(contextScoreMap, ctxKey) ? map.get(contextScoreMap, ctxKey) : na
+    ctxSamples := map.contains(contextCountMap, ctxKey) ? map.get(contextCountMap, ctxKey) : 0
+    contextOk := not useContextScoring or ctxSamples < minContextSamples or (not na(ctxScore) and ctxScore >= minContextScore)
+    if state.pattern.active
+        state.lastPatternName := f_patternName(state.pattern.pType)
+        state.lastPatternProb := state.pattern.successProb
+        state.lastPatternTarget := state.pattern.target
+        if barstate.isconfirmed and state.pattern.breakoutIndex == bar_index
+            bool hsGeomOk = state.pattern.pType == PatternType.HeadShoulders and not na(geomPh0) and not na(geomPh1) and not na(geomPh2) and not na(geomPl0) and not na(geomPl1) and not na(geomPh0Bar) and not na(geomPh1Bar) and not na(geomPh2Bar) and not na(geomPl0Bar) and not na(geomPl1Bar)
+            bool flagGeomOk = (state.pattern.pType == PatternType.BullFlag or state.pattern.pType == PatternType.BearFlag or state.pattern.pType == PatternType.BullPennant or state.pattern.pType == PatternType.BearPennant) and bar_index > flagWindow * 2
+            bool triGeomOk = (state.pattern.pType == PatternType.TriangleBull or state.pattern.pType == PatternType.TriangleBear) and 
+              not na(geomPh0) and not na(geomPh1) and not na(geomPl0) and not na(geomPl1) and 
+              not na(geomPh0Bar) and not na(geomPh1Bar) and not na(geomPl0Bar) and not na(geomPl1Bar) and 
+              geomPh0 < geomPh1 and geomPl0 > geomPl1 and geomPh0 > geomPl0
+            bool genericPatternGeomOk = state.pattern.pType != PatternType.None
+            bool geometryReady = not na(state.pattern.breakoutLevel) and not na(state.pattern.target) and (hsGeomOk or flagGeomOk or triGeomOk or genericPatternGeomOk)
+            int flagPoleOffset = flagWindow
+            float flagPoleBodyMax = 0.0
+            float flagPoleStart = state.pattern.bullish ? low[flagWindow] : high[flagWindow]
+            float flagPoleEnd = state.pattern.bullish ? high[flagWindow] : low[flagWindow]
+            if flagGeomOk
+                for i = flagWindow to flagWindow * 2 - 1
+                    float directionalBody = state.pattern.bullish ? math.max(close[i] - open[i], 0.0) : math.max(open[i] - close[i], 0.0)
+                    if directionalBody > flagPoleBodyMax
+                        flagPoleBodyMax := directionalBody
+                        flagPoleOffset := i
+                        flagPoleStart := state.pattern.bullish ? low[i] : high[i]
+                        flagPoleEnd := state.pattern.bullish ? high[i] : low[i]
+            if geometryReady
+                PatternGeometry geom = PatternGeometry.new(array.new_line(), array.new_label(), array.new<box>(), 
+                  chart.point.from_index(bar_index, state.pattern.breakoutLevel), state.pattern.target, state.pattern.pType, true, 
+                  bar_index, projectionBars, geomPh0, geomPh1, geomPh2, geomPl0, geomPl1, geomPh0Bar, geomPh1Bar, geomPh2Bar, 
+                  geomPl0Bar, geomPl1Bar, flagPoleStart, flagPoleEnd, flagPoleOffset, drawFlagChannelHigh, drawFlagChannelLow)
+                geom.drawPattern()
+                state.diag.patternCountActive := array.size(activePatternLabels)
+                state.logDecision("PATTERN", "confirmed " + f_patternName(state.pattern.pType) + ", breakout=" + str.tostring(state.pattern.breakoutLevel) + ", target=" + str.tostring(state.pattern.target))
+            else
+                state.logDecision("PATTERN", "Geometry skipped because required confirmed pivots are not available")
+    state.buildPlan(atrV, dynamicSlMult, rrTp1, rrTp2, rrTp3, conservativeMode, sessionOk, spacingOk, dayLimitOk, state.imbalanceOk, strongBreakoutVol, entryRsLongOk, riskPerTradePct, pocLongOk, pocShortOk, not state.riskExceeded, bullCandleConfirm, bearCandleConfirm, contextOk, ctxKey, ctxScore, ctxSamples, triangleSimilarity, minEntryScore)
+    if state.plan.ready and state.plan.dir == Direction.Long and not na(eqhLevel) and math.abs(state.plan.tp1 - eqhLevel) / math.max(state.plan.tp1, syminfo.mintick) <= 0.001
+        state.diag.originalTp1 := state.plan.tp1
+        bool confirmedEqhBreak = close > eqhLevel and relVol > 2.5
+        state.plan.tp1 := confirmedEqhBreak ? math.min(eqhLevel * (1.0 + liquidityPiercePct * 0.01), not na(state.structure.lastSwingHigh) ? state.structure.lastSwingHigh * (1.0 + liquidityPiercePct * 0.01) : eqhLevel * (1.0 + liquidityPiercePct * 0.01)) : math.min(state.plan.tp1, eqhLevel)
+        state.diag.adjustedTp1 := state.plan.tp1
+        state.diag.lastTpAdjustment := confirmedEqhBreak ? "Liquidity magnet EQH confirmed pierce: " + str.tostring(state.diag.originalTp1) + " → " + str.tostring(state.plan.tp1) : "Liquidity magnet EQH capped until close breaks level"
+    if state.plan.ready and state.plan.dir == Direction.Short and not na(eqlLevel) and math.abs(state.plan.tp1 - eqlLevel) / math.max(state.plan.tp1, syminfo.mintick) <= 0.001
+        state.diag.originalTp1 := state.plan.tp1
+        bool confirmedEqlBreak = close < eqlLevel and relVol > 2.5
+        state.plan.tp1 := confirmedEqlBreak ? math.max(eqlLevel * (1.0 - liquidityPiercePct * 0.01), not na(state.structure.lastSwingLow) ? state.structure.lastSwingLow * (1.0 - liquidityPiercePct * 0.01) : eqlLevel * (1.0 - liquidityPiercePct * 0.01)) : math.max(state.plan.tp1, eqlLevel)
+        state.diag.adjustedTp1 := state.plan.tp1
+        state.diag.lastTpAdjustment := confirmedEqlBreak ? "Liquidity magnet EQL confirmed pierce: " + str.tostring(state.diag.originalTp1) + " → " + str.tostring(state.plan.tp1) : "Liquidity magnet EQL capped until close breaks level"
+    if state.plan.ready
+        state.logDecision("PLANNING", "entry=" + str.tostring(state.plan.entry) + ", SL=" + str.tostring(state.plan.stop) + ", TP1=" + str.tostring(state.plan.tp1) + ", TP2=" + str.tostring(state.plan.tp2) + ", structural=" + state.diag.lastTpAdjustment)
+    else
+        state.diag.lastBlockReason := not sessionOk ? "No session" : not spacingOk ? "Spacing" : not dayLimitOk ? "Day limit" : state.riskExceeded ? "RiskGuard" : "Score below threshold / no OB touch"
+        state.logDecision("RISKGUARD", "Plan blocked: " + state.diag.lastBlockReason)
+    state.execute(strategyActive, cooldownBars, volatilitySnapshot, longChandelierStop, shortChandelierStop)
+
+if strategy.position_size == 0
+    movedToBreakEven := false
+
+if strategyActive and state.plan.ready and strategy.position_size != 0
+    bool longBeTrigger = state.plan.dir == Direction.Long and high >= state.plan.tp1
+    bool shortBeTrigger = state.plan.dir == Direction.Short and low <= state.plan.tp1
+    if (longBeTrigger or shortBeTrigger) and not movedToBreakEven
+        movedToBreakEven := true
+        float qtyForTp1 = math.abs(state.plan.qty) * 0.50
+        float remainingAfterTp1 = math.max(math.abs(state.plan.qty) - qtyForTp1, 0.0)
+        float beStop = state.plan.dir == Direction.Long ? math.max(state.plan.entry, state.plan.stop) : math.min(state.plan.entry, state.plan.stop)
+        if state.plan.dir == Direction.Long
+            strategy.close("L", qty=qtyForTp1, comment="TP1")
+            strategy.cancel("L-TP2-INIT")
+            strategy.cancel("L-CHAND-INIT")
+            strategy.exit("L-TP2-BE", "L", limit=state.plan.tp2, stop=beStop, qty_percent=100)
+            strategy.exit("L-CHAND-BE", "L", stop=math.max(beStop, longChandelierStop), qty_percent=100)
+        else if state.plan.dir == Direction.Short
+            strategy.close("S", qty=qtyForTp1, comment="TP1")
+            strategy.cancel("S-TP2-INIT")
+            strategy.cancel("S-CHAND-INIT")
+            strategy.exit("S-TP2-BE", "S", limit=state.plan.tp2, stop=beStop, qty_percent=100)
+            strategy.exit("S-CHAND-BE", "S", stop=math.min(beStop, shortChandelierStop), qty_percent=100)
+        state.plan.exitReason := "TP1/Breakeven"
+        log.info("[BREAKEVEN] TP1 closed: " + str.tostring(qtyForTp1) + " units. Remaining: " + str.tostring(remainingAfterTp1) + ". TP2-BE: 100% of rem.")
+
+// ATR/Chandelier trailing management: update the protective stop every confirmed bar.
+// Cancel old Chandelier exits to prevent ID conflicts before creating updated ones.
+if strategyActive and strategy.position_size != 0 and state.plan.ready
+    if state.plan.dir == Direction.Long
+        if movedToBreakEven
+            strategy.cancel("L-CHAND-BE")
+        else
+            strategy.cancel("L-CHAND-INIT")
+        float activeLongStop = movedToBreakEven ? math.max(state.plan.entry + syminfo.mintick, longChandelierStop) : math.max(state.plan.stop, longChandelierStop)
+        strategy.exit("L-CHAND-RUN", "L", stop=activeLongStop, qty_percent=100)
+    else if state.plan.dir == Direction.Short
+        if movedToBreakEven
+            strategy.cancel("S-CHAND-BE")
+        else
+            strategy.cancel("S-CHAND-INIT")
+        float activeShortStop = movedToBreakEven ? math.min(state.plan.entry - syminfo.mintick, shortChandelierStop) : math.min(state.plan.stop, shortChandelierStop)
+        strategy.exit("S-CHAND-RUN", "S", stop=activeShortStop, qty_percent=100)
+
+// High-End Optimization: Adaptive Time-Volatility Exit
+if strategyActive and strategy.position_size != 0 and not na(state.tradeOpenBar) and state.plan.ready
+    int barsInTrade = bar_index - state.tradeOpenBar
+    float volFactor = math.max(0.7, math.min(1.5, atrV / math.max(atrBase, syminfo.mintick)))
+    int dynamicTimeStop = int(math.round(baseTimeStopBars * volFactor))
+    float progressR = state.plan.dir == Direction.Long ? (close - state.plan.entry) / math.max(state.plan.risk, syminfo.mintick) : (state.plan.entry - close) / math.max(state.plan.risk, syminfo.mintick)
+    if barsInTrade >= dynamicTimeStop and progressR < 0.35
+        strategy.close(state.plan.dir == Direction.Long ? "L" : "S", comment="AdaptiveTimeExit")
+        state.plan.exitReason := "AdaptiveTimeExit"
+        log.info("[EXIT] AdaptiveTimeExit triggered: low progress after dynamic holding window.")
+
+if barstate.isconfirmed and strategyActive and state.plan.ready
+    log.info("[PLANNING] plan ready; dir=" + str.tostring(state.plan.dir) + ", grade=" + str.tostring(state.plan.grade) + ", TPbars~" + str.tostring(state.plan.estBarsToTp1))
+if barstate.isconfirmed and emptyVolume
+    log.info("[PERCEPTION] Low/empty volume context. Future projection probability is reduced.")
+if barstate.isconfirmed and corrMode == "DXY" and corrRiskUp and isAltSymbol and state.plan.dir == Direction.Long
+    log.info("[RISKGUARD] Correlation risk warning. DXY rising while preparing ALT long.")
+if barstate.isconfirmed and btcDomBlocksAltLong
+    log.info("[RISKGUARD] BTC.D rising — ALT long blocked")
+if barstate.isconfirmed and btcDomPermitsAltLong
+    log.info("[RISKGUARD] BTC.D falling — ALT long permitted")
+if barstate.isconfirmed and not rsLongOk and state.plan.dir == Direction.Long
+    log.info("[RISKGUARD] Relative strength filter blocked weak ALT long.")
+if barstate.isconfirmed and state.riskExceeded
+    log.info("[RISKGUARD] Session drawdown exceeded limit. New entries blocked until next day.")
+
+// =========================
+// Structure Rendering
+// =========================
+if barstate.isconfirmed
+    if not na(state.structure.lastSwingHigh)
+        array.push(structurePoints, chart.point.from_index(state.structure.lastSwingHighIndex, state.structure.lastSwingHigh))
+    if not na(state.structure.lastSwingLow)
+        array.push(structurePoints, chart.point.from_index(state.structure.lastSwingLowIndex, state.structure.lastSwingLow))
+
+    int pointsSize = array.size(structurePoints)
+    if pointsSize > 140
+        int removeCount = pointsSize - 140
+        for i = 0 to int(removeCount - 1)
+            array.shift(structurePoints)
+
+    if array.size(structurePoints) > 1
+        polyline.delete(structureLine)
+        structureLine := polyline.new(structurePoints, false, false, xloc.bar_index, color.new(color.yellow, 0), color.new(color.yellow, 100), line.style_solid, 2)
+
+// =========================
+// Pattern geometry lifecycle
+// =========================
+if barstate.isconfirmed
+    f_expirePatternObjects(math.max(3, int(projectionBars * 0.6)))
+    if state.pattern.active and not na(state.pattern.breakoutIndex) and bar_index - state.pattern.breakoutIndex > math.max(3, int(projectionBars * 0.6))
+        f_destroyPatternObjectsBorn(state.pattern.breakoutIndex)
+        state.pattern.clearPattern()
+        state.logDecision("PATTERN", "Expired current projection window; current geometry removed")
+
+if barstate.isconfirmed and state.pattern.active and state.pattern.breakoutIndex == bar_index
+    log.info("[PATTERN] breakout: " + f_patternName(state.pattern.pType) + ", RV=" + str.tostring(state.pattern.relVolume) + ", target=" + str.tostring(state.pattern.target))
+
+// =========================
+// OB/FVG Rendering
+// =========================
+if barstate.isconfirmed
+    if state.ob.valid and showObBoxes
+        color obColor = state.ob.bullish ? color.new(color.teal, 82) : color.new(color.maroon, 82)
+        box newObBox = box.new(state.ob.bornIndex - 1, state.ob.high, bar_index + 20, state.ob.low, bgcolor=obColor, border_color=color.new(obColor, 0), xloc=xloc.bar_index)
+        array.push(obBoxes, newObBox)
+        array.push(obBoxColors, obColor)
+        if array.size(obBoxes) > 1
+            for i = 0 to array.size(obBoxes) - 2
+                box oldBox = array.get(obBoxes, i)
+                color oldObColor = array.get(obBoxColors, i)
+                box.set_bgcolor(oldBox, color.new(oldObColor, 93))
+                box.set_border_color(oldBox, color.new(color.gray, 90))
+
+    bool hasBullFvg = bar_index > 2 and low > high[2]
+    bool hasBearFvg = bar_index > 2 and high < low[2]
+    if showFvgBoxes and (hasBullFvg or hasBearFvg)
+        float fvgTop = hasBullFvg ? low : low[2]
+        float fvgBottom = hasBullFvg ? high[2] : high
+        color fvgColor = hasBullFvg ? color.new(color.teal, 84) : color.new(color.purple, 84)
+        box newFvgBox = box.new(bar_index - 2, fvgTop, bar_index + 12, fvgBottom, bgcolor=fvgColor, border_color=color.new(fvgColor, 0), xloc=xloc.bar_index)
+        array.push(fvgBoxes, newFvgBox)
+        if array.size(fvgBoxes) > 1
+            for i = 0 to array.size(fvgBoxes) - 2
+                box oldFvgBox = array.get(fvgBoxes, i)
+                box.set_bgcolor(oldFvgBox, color.new(color.gray, 94))
+                box.set_border_color(oldFvgBox, color.new(color.gray, 92))
+
+    if array.size(obBoxes) > 12
+        box oldOb = array.shift(obBoxes)
+        array.shift(obBoxColors)
+        box.delete(oldOb)
+
+    if array.size(fvgBoxes) > 16
+        box oldFvg = array.shift(fvgBoxes)
+        box.delete(oldFvg)
+
+// =========================
+// Trade Plan Lines
+// =========================
+if showTradePlanLines and state.plan.ready
+    color dirColor = state.plan.dir == Direction.Long ? color.teal : color.maroon
+
+    if na(entryLine)
+        entryLine := line.new(bar_index - 1, state.plan.entry, bar_index + 1, state.plan.entry, color=color.new(color.white, 0), width=2)
+        stopLine := line.new(bar_index - 1, state.plan.stop, bar_index + 1, state.plan.stop, color=color.new(color.maroon, 0), width=2)
+        tp1Line := line.new(bar_index - 1, state.plan.tp1, bar_index + 1, state.plan.tp1, color=color.new(dirColor, 10), width=1)
+        tp2Line := line.new(bar_index - 1, state.plan.tp2, bar_index + 1, state.plan.tp2, color=color.new(dirColor, 0), width=1)
+        tp3Line := line.new(bar_index - 1, state.plan.tp3, bar_index + 1, state.plan.tp3, color=color.new(dirColor, 0), width=2)
+    else
+        line.set_xy1(entryLine, bar_index - 1, state.plan.entry)
+        line.set_xy2(entryLine, bar_index + 1, state.plan.entry)
+        line.set_xy1(stopLine, bar_index - 1, state.plan.stop)
+        line.set_xy2(stopLine, bar_index + 1, state.plan.stop)
+        line.set_xy1(tp1Line, bar_index - 1, state.plan.tp1)
+        line.set_xy2(tp1Line, bar_index + 1, state.plan.tp1)
+        line.set_xy1(tp2Line, bar_index - 1, state.plan.tp2)
+        line.set_xy2(tp2Line, bar_index + 1, state.plan.tp2)
+        line.set_xy1(tp3Line, bar_index - 1, state.plan.tp3)
+        line.set_xy2(tp3Line, bar_index + 1, state.plan.tp3)
+
+    label.delete(planLabel)
+    label.delete(stopLabel)
+    label.delete(tp1Label)
+    label.delete(tp2Label)
+    label.delete(tp3Label)
+    
+    string sigText = state.plan.grade == SignalGrade.A ? f_txt("signalA", lang) : state.plan.grade == SignalGrade.B ? f_txt("signalB", lang) : f_txt("none", lang)
+    planLabel := label.new(bar_index + 2, state.plan.entry, "ENTRY: " + str.tostring(state.plan.entry, format.mintick), style=label.style_label_left, color=color.new(color.black, 30), textcolor=color.white, size=size.small)
+    stopLabel := label.new(bar_index + 2, state.plan.stop, "SL: " + str.tostring(state.plan.stop, format.mintick), style=label.style_label_left, color=color.new(color.black, 30), textcolor=color.maroon, size=size.small)
+    tp1Label := label.new(bar_index + 2, state.plan.tp1, "TP1: " + str.tostring(state.plan.tp1, format.mintick), style=label.style_label_left, color=color.new(color.black, 30), textcolor=color.teal, size=size.small)
+    tp2Label := label.new(bar_index + 2, state.plan.tp2, "TP2: " + str.tostring(state.plan.tp2, format.mintick), style=label.style_label_left, color=color.new(color.black, 30), textcolor=color.teal, size=size.small)
+    tp3Label := label.new(bar_index + 2, state.plan.tp3, "TP3: " + str.tostring(state.plan.tp3, format.mintick), style=label.style_label_left, color=color.new(color.black, 30), textcolor=color.teal, size=size.small)
+
+// =========================
+// Visual Aids
+// =========================
+plot(state.structure.lastSwingHigh, "Останній swing high", color=color.new(color.maroon, 35), style=plot.style_linebr)
+plot(state.structure.lastSwingLow, "Останній swing low", color=color.new(color.teal, 35), style=plot.style_linebr)
+
+bgcolor(state.phase == AgentPhase.Execution and state.plan.ready ? color.new(color.blue, 90) : na)
+bool lsAny = state.liq.sweptHigh or state.liq.sweptLow
+bool bosAny = state.structure.bosBull or state.structure.bosBear
+bool candleAny = bullCandleConfirm or bearCandleConfirm
+int confluenceParts = (lsAny ? 1 : 0) + (bosAny ? 1 : 0) + (candleAny ? 1 : 0)
+bool groupedConfluence = confluenceParts > 1
+if barstate.isconfirmed and groupedConfluence and (na(lastConfluenceLabelBar) or bar_index - lastConfluenceLabelBar > 4)
+    lastConfluenceLabelBar := bar_index
+    label confluenceLabel = label.new(bar_index, candleAny and bullCandleConfirm ? low : high, "КОНФЛЮЕНС", style=candleAny and bullCandleConfirm ? label.style_label_up : label.style_label_down, color=color.new(color.black, 15), textcolor=color.aqua, size=size.small)
+    array.push(signalLabels, confluenceLabel)
+    if array.size(signalLabels) > 30
+        label oldSignalLabel = array.shift(signalLabels)
+        label.delete(oldSignalLabel)
+plotshape(showDebugLabels and not groupedConfluence and state.liq.sweptHigh, title="Зняття ліквідності high", style=shape.triangledown, color=color.olive, location=location.abovebar, size=size.tiny, text="LS↑")
+plotshape(showDebugLabels and not groupedConfluence and state.liq.sweptLow, title="Зняття ліквідності low", style=shape.triangleup, color=color.olive, location=location.belowbar, size=size.tiny, text="LS↓")
+plotshape(showDebugLabels and not groupedConfluence and state.structure.bosBull, title="Бичачий BOS", style=shape.labelup, color=color.new(color.teal, 0), location=location.belowbar, text="BOS")
+plotshape(showDebugLabels and not groupedConfluence and state.structure.bosBear, title="Ведмежий BOS", style=shape.labeldown, color=color.new(color.maroon, 0), location=location.abovebar, text="BOS")
+bool showPatternMarker = showDebugLabels and showMicroPatternMarkers and state.pattern.active
+bool bullContinuationMarker = showPatternMarker and (state.pattern.pType == PatternType.BullFlag or state.pattern.pType == PatternType.BullPennant or state.pattern.pType == PatternType.ChannelRising or state.pattern.pType == PatternType.WedgeFallingCont)
+bool bearContinuationMarker = showPatternMarker and (state.pattern.pType == PatternType.BearFlag or state.pattern.pType == PatternType.BearPennant or state.pattern.pType == PatternType.ChannelFalling or state.pattern.pType == PatternType.WedgeRisingCont)
+bool bullReversalMarker = showPatternMarker and (state.pattern.pType == PatternType.DoubleBottom or 
+      state.pattern.pType == PatternType.TripleBottom or state.pattern.pType == PatternType.InvHeadShoulders or 
+      state.pattern.pType == PatternType.WedgeFalling or state.pattern.pType == PatternType.WedgeBullish or 
+      state.pattern.pType == PatternType.RoundingBottom or state.pattern.pType == PatternType.CupHandle)
+bool bearReversalMarker = showPatternMarker and (state.pattern.pType == PatternType.HeadShoulders or 
+      state.pattern.pType == PatternType.DoubleTop or state.pattern.pType == PatternType.TripleTop or 
+      state.pattern.pType == PatternType.WedgeRising or state.pattern.pType == PatternType.WedgeBearish or 
+      state.pattern.pType == PatternType.RoundingTop or state.pattern.pType == PatternType.DiamondTop)
+bool triangleMarker = showPatternMarker and (state.pattern.pType == PatternType.TriangleBull or state.pattern.pType == PatternType.TriangleBear or state.pattern.pType == PatternType.TriangleAscending or state.pattern.pType == PatternType.TriangleDescending)
+plotshape(bullContinuationMarker, title="Бичаче продовження", style=shape.circle, color=color.new(color.teal, 0), location=location.belowbar, size=size.tiny, text="CONT↑")
+plotshape(bearContinuationMarker, title="Ведмеже продовження", style=shape.circle, color=color.new(color.maroon, 0), location=location.abovebar, size=size.tiny, text="CONT↓")
+plotshape(bullReversalMarker, title="Бичачий розворот", style=shape.square, color=color.new(color.teal, 0), location=location.belowbar, size=size.tiny, text="REV↑")
+plotshape(bearReversalMarker, title="Ведмежий розворот", style=shape.square, color=color.new(color.maroon, 0), location=location.abovebar, size=size.tiny, text="REV↓")
+plotshape(triangleMarker, title="Трикутник", style=shape.diamond, color=color.new(color.aqua, 0), location=location.top, size=size.tiny, text="TRI")
+
+// =========================
+// Dashboard
+// =========================
+if showDashboard
+    table.set_bgcolor(dash, color.new(color.black, 88))
+    table.set_frame_color(dash, color.new(color.black, 70))
+    table.set_border_color(dash, color.new(color.black, 80))
+    int planAge = not na(state.lastSignalBar) ? bar_index - state.lastSignalBar : 100000
+    bool planFresh = state.plan.ready and planAge <= 1
+    float actualRR = planFresh and state.plan.risk > syminfo.mintick ? (state.plan.dir == Direction.Long ? (state.plan.tp1 - state.plan.entry) / state.plan.risk : (state.plan.entry - state.plan.tp1) / state.plan.risk) : na
+    float winRateToday = state.todayClosed > 0 ? (state.todayWins / state.todayClosed) * 100.0 : 0.0
+    string phaseTxt = str.tostring(state.phase)
+    string trendTxt = str.tostring(state.trend)
+    string statusTxt = state.riskExceeded ? "РИЗИК ПЕРЕВИЩЕНО" : str.tostring(state.status)
+    string obTxt = state.status == AgentStatus.InPosition ? "У позиції (" + (strategy.position_size > 0 ? "Long" : "Short") + ")" : state.ob.valid ? (state.ob.bullish ? "Бичачий OB" : "Ведмежий OB") : f_txt("none", lang)
+    string liqTxt = state.liq.sweptHigh ? "Зняття high" : state.liq.sweptLow ? "Зняття low" : "Без зняття"
+    string rrTxt = planFresh and not na(actualRR) ? str.tostring(math.round(actualRR * 100.0) / 100.0) + " (структ.)" : state.plan.ready ? "застаріло" : "n/a"
+    string dirTxt = planFresh ? str.tostring(state.plan.dir) : str.tostring(Direction.Flat)
+    string gradeTxt = planFresh ? str.tostring(state.plan.grade) : state.plan.ready ? "застаріло" : state.lastIdeaGrade != "n/a" ? state.lastIdeaGrade : state.lastPatternName
+    string patternTxt = state.pattern.active ? f_patternName(state.pattern.pType) : f_txt("none", lang)
+    string probTxt = state.pattern.active ? str.tostring(math.round(state.pattern.successProb * 100.0)) + "%" : not na(state.lastPatternProb) ? str.tostring(math.round(state.lastPatternProb * 100.0)) + "%" : "n/a"
+    string targetTxt = planFresh ? "TP1: " + str.tostring(state.plan.tp1) : state.pattern.active ? "Pat: " + str.tostring(state.lastPatternTarget) : "n/a"
+    string corrTxt = corrMode + ": " + str.tostring(math.round(corrTrendPct * 10.0) / 10.0) + "%"
+    string rsTxt = str.tostring(math.round(relStrength * 1000.0) / 10.0) + "%"
+    string winRateTxt = str.tostring(math.round(winRateToday)) + "%"
+    string ddTxt = str.tostring(math.round(state.sessionMaxDd * 1000.0) / 10.0) + "%"
+    string pocTxt = str.tostring(state.pocLevel)
+    string qtyTxt = planFresh ? str.tostring(math.round(state.plan.qty * 1000.0) / 1000.0) : state.plan.ready ? "застаріло" : "n/a"
+    string blockTxt = str.length(state.diag.lastBlockReason) > 0 ? state.diag.lastBlockReason : "n/a"
+    color passiveTxt = color.new(color.silver, 25)
+    color warnTxt = color.olive
+
+    table.cell(dash, 0, 0, f_txt("phase", lang), text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 0, phaseTxt, text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 1, f_txt("trend", lang), text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 1, trendTxt, text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 2, f_txt("status", lang), text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 2, statusTxt, text_color=state.riskExceeded ? color.maroon : color.white, text_size=size.small)
+    table.cell(dash, 0, 3, f_txt("ob", lang), text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 3, obTxt, text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 4, f_txt("liq", lang), text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 4, liqTxt, text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 5, f_txt("rr", lang), text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 5, rrTxt, text_color=planFresh ? color.white : passiveTxt, text_size=size.small)
+    table.cell(dash, 0, 6, f_txt("dir", lang), text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 6, dirTxt, text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 7, f_txt("grade", lang), text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 7, gradeTxt, text_color=planFresh ? color.white : passiveTxt, text_size=size.small)
+    table.cell(dash, 0, 8, f_txt("pattern", lang), text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 8, patternTxt, text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 9, f_txt("prob", lang), text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 9, probTxt, text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 10, "Ціль", text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 10, targetTxt, text_color=planFresh ? color.white : passiveTxt, text_size=size.small)
+    table.cell(dash, 0, 11, "Кореляція", text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 11, corrTxt, text_color=corrBlocksAltLong ? warnTxt : color.white, text_size=size.small)
+    table.cell(dash, 0, 12, "RS", text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 12, rsTxt, text_color=rsLongOk ? color.teal : warnTxt, text_size=size.small)
+    table.cell(dash, 0, 13, "Вінрейт", text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 13, winRateTxt, text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 14, "Макс. DD", text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 14, ddTxt, text_color=state.sessionMaxDd > 0.03 ? warnTxt : color.white, text_size=size.small)
+    table.cell(dash, 0, 15, "POC", text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 15, pocTxt, text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 16, "К-сть", text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 16, qtyTxt, text_color=planFresh ? color.white : passiveTxt, text_size=size.small)
+    table.cell(dash, 0, 17, "Останній блок", text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 17, blockTxt, text_color=warnTxt, text_size=size.small)
