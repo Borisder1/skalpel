@@ -34,18 +34,25 @@ TIMEFRAME = "15m"
 last_setup_bars = {sym: None for sym in SYMBOLS}
 
 def init_bybit():
-    """Ініціалізація Bybit Testnet через ccxt."""
+    """Ініціалізація Bybit для отримання публічних даних (без ключів)."""
     exchange = ccxt.bybit({
-        'apiKey': API_KEY,
-        'secret': API_SECRET,
         'enableRateLimit': True,
         'options': {
             'defaultType': 'future',
-            'adjustForTimeDifference': True, # Авто-синхронізація часу з біржею
-            'recvWindow': 10000 # Збільшуємо вікно затримки до 10 секунд
+            'adjustForTimeDifference': True,
+            'recvWindow': 10000
         }
     })
-    exchange.set_sandbox_mode(True) # Вмикаємо Testnet!
+    
+    # Ми не використовуємо sandbox_mode, оскільки просто читаємо публічні графіки
+    # з основної біржі Bybit.
+    
+    # Явно синхронізуємо час ПЕРЕД завантаженням ринків
+    try:
+        exchange.load_time_difference()
+    except Exception as e:
+        print(f"Попередження при синхронізації часу: {e}")
+        
     return exchange
 
 def fetch_data(exchange, symbol, timeframe, limit=100):
