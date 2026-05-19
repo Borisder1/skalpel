@@ -27,18 +27,22 @@ CONFIG = {
     "fvg_min_size": 0.5,
 }
 
-SYMBOLS = [
-    "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", 
-    "AVAXUSDT", "DOGEUSDT", "DOTUSDT", "LINKUSDT", "MATICUSDT", 
-    "LTCUSDT", "BCHUSDT", "ATOMUSDT", "UNIUSDT", "NEARUSDT", 
-    "APTUSDT", "OPUSDT", "ARBUSDT", "INJUSDT", "RNDRUSDT", 
-    "SUIUSDT", "SEIUSDT", "FETUSDT", "PEPEUSDT", "WIFUSDT", 
-    "SHIBUSDT", "TONUSDT", "BNBUSDT", "TRXUSDT", "FILUSDT"
-]
 TIMEFRAME = "15m"
 
+def get_all_usdt_symbols(exchange):
+    """Отримує всі активні USDT ф'ючерси на Bybit."""
+    print(f"[{datetime.now()}] Завантаження списку всіх монет з Bybit...")
+    exchange.load_markets()
+    symbols = []
+    for symbol, market in exchange.markets.items():
+        if market.get('linear') and market.get('quote') == 'USDT' and market.get('active'):
+            symbols.append(symbol)
+    
+    print(f"[{datetime.now()}] Знайдено {len(symbols)} USDT пар для сканування!")
+    return symbols
+
 # Зберігаємо стан для кожної пари (остання свічка, де знайдено сетап)
-last_setup_bars = {sym: None for sym in SYMBOLS}
+last_setup_bars = {}
 
 def init_bybit():
     """Ініціалізація Bybit для отримання публічних даних (без ключів)."""
@@ -71,8 +75,17 @@ def fetch_data(exchange, symbol, timeframe, limit=100):
 
 def run_bot():
     exchange = init_bybit()
-    send_telegram_message("🚀 <b>SMC Racer</b> успішно запущено на Bybit Testnet!\nОчікую торгові сетапи...")
-    print(f"[{datetime.now()}] Бот запущений. Торгуємо: {SYMBOLS}")
+    
+    # Завантажуємо ВСІ доступні криптовалюти
+    SYMBOLS = get_all_usdt_symbols(exchange)
+    
+    # Ініціалізуємо пам'ять для кожної знайденої монети
+    global last_setup_bars
+    for sym in SYMBOLS:
+        last_setup_bars[sym] = None
+
+    send_telegram_message(f"🚀 <b>SMC Racer</b> успішно запущено!\nСканую <b>{len(SYMBOLS)}</b> криптовалют на Bybit.\nОчікую торгові сетапи...")
+    print(f"[{datetime.now()}] Бот запущений. Торгуємо ВСІМА доступними парами ({len(SYMBOLS)} шт.)")
 
     while True:
         try:
