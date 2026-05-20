@@ -93,6 +93,7 @@ def load_dynamic_config():
         "symbol_offset": 0,
         "scout_top_n": 40,
         "rotate_step": 20
+        "symbol_offset": 0
     }
 
 def get_all_usdt_symbols(exchange, max_symbols=None):
@@ -231,6 +232,18 @@ def run_bot():
     # Завантажуємо повний список доступних символів один раз
     all_symbols = get_all_usdt_symbols(exchange)
     cycle_index = 0
+    # Завантажуємо ф'ючерсні монети
+    max_symbols = int(load_dynamic_config().get("max_symbols", 120))
+    symbol_offset = int(load_dynamic_config().get("symbol_offset", 0))
+
+    all_symbols = get_all_usdt_symbols(exchange)
+    if symbol_offset > 0:
+        all_symbols = all_symbols[symbol_offset:] + all_symbols[:symbol_offset]
+    SYMBOLS = all_symbols[:max_symbols]
+    
+    global last_setup_bars
+    for sym in SYMBOLS:
+        last_setup_bars[sym] = None
 
     send_telegram_message(
         f"🚀 <b>SMC Racer (Мульти-Агентна версія)</b> активована!\n"
@@ -338,6 +351,9 @@ def run_bot():
                 continue
             except RateLimitExceeded as e:
                 cycle_rate_limits += 1
+                print(f"[{datetime.now()}] ⚠️ Пропускаємо невалідний символ {symbol}: {e}")
+                continue
+            except RateLimitExceeded as e:
                 print(f"[{datetime.now()}] ⚠️ Rate limit на {symbol}. Чекаємо 8с: {e}")
                 time.sleep(8)
                 continue
@@ -348,6 +364,9 @@ def run_bot():
                     continue
                 if "Too many visits" in str(e):
                     cycle_rate_limits += 1
+                    print(f"[{datetime.now()}] ⚠️ Пропускаємо невалідний символ {symbol}: {e}")
+                    continue
+                if "Too many visits" in str(e):
                     print(f"[{datetime.now()}] ⚠️ Rate limit на {symbol}. Чекаємо 8с: {e}")
                     time.sleep(8)
                     continue
