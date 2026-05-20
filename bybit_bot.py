@@ -2,6 +2,7 @@ import os
 import time
 import json
 import ccxt
+from ccxt.base.errors import RateLimitExceeded, BadSymbol
 import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
@@ -40,10 +41,12 @@ def load_dynamic_config():
         "liq_lookback": 20,
         "adx_thresh": 15,
         "vol_mult": 1.1,
-        "fvg_min_size": 0.2
+        "fvg_min_size": 0.2,
+        "max_symbols": 120,
+        "symbol_offset": 0
     }
 
-def get_all_usdt_symbols(exchange):
+def get_all_usdt_symbols(exchange, max_symbols=None):
     """Отримує всі активні USDT ф'ючерси на Bybit."""
     print(f"[{datetime.now()}] Завантаження списку монет з Bybit...")
     exchange.load_markets()
@@ -53,6 +56,12 @@ def get_all_usdt_symbols(exchange):
             if market.get('active'):
                 symbols.append(symbol)
     
+    symbols = sorted(symbols)
+
+    if max_symbols:
+        print(f"[{datetime.now()}] Обмежуємо сканування до {max_symbols} пар (щоб не впиратись у Rate Limit).")
+        symbols = symbols[:max_symbols]
+
     print(f"[{datetime.now()}] Знайдено {len(symbols)} USDT ф'ючерсних пар для сканування!")
     return symbols
 
@@ -171,7 +180,13 @@ def run_bot():
     exchange = init_bybit()
     
     # Завантажуємо ф'ючерсні монети
-    SYMBOLS = get_all_usdt_symbols(exchange)
+    max_symbols = int(load_dynamic_config().get("max_symbols", 120))
+    symbol_offset = int(load_dynamic_config().get("symbol_offset", 0))
+
+    all_symbols = get_all_usdt_symbols(exchange)
+    if symbol_offset > 0:
+        all_symbols = all_symbols[symbol_offset:] + all_symbols[:symbol_offset]
+    SYMBOLS = all_symbols[:max_symbols]
     
     global last_setup_bars
     for sym in SYMBOLS:
@@ -246,12 +261,25 @@ def run_bot():
                             risk_pct=CONFIG["risk_pct"]
                         )
                 
-                # Запобігання Rate Limit (0.5 сек)
-                time.sleep(0.5)
+                # Запобігання Rate Limit (динамічно від біржі)
+                time.sleep(max(exchange.rateLimit / 1000.0, 0.35))
 
+            except BadSymbol as e:
+                print(f"[{datetime.now()}] ⚠️ Пропускаємо невалідний символ {symbol}: {e}")
+                continue
+            except RateLimitExceeded as e:
+                print(f"[{datetime.now()}] ⚠️ Rate limit на {symbol}. Чекаємо 8с: {e}")
+                time.sleep(8)
+                continue
             except Exception as e:
-                if "Symbol Is Invalid" not in str(e):
-                    print(f"[{datetime.now()}] ⚠️ Помилка на {symbol}: {e}")
+                if "Symbol Is Invalid" in str(e):
+                    print(f"[{datetime.now()}] ⚠️ Пропускаємо невалідний символ {symbol}: {e}")
+                    continue
+                if "Too many visits" in str(e):
+                    print(f"[{datetime.now()}] ⚠️ Rate limit на {symbol}. Чекаємо 8с: {e}")
+                    time.sleep(8)
+                    continue
+                print(f"[{datetime.now()}] ⚠️ Помилка на {symbol}: {e}")
                 time.sleep(1)
                 continue
 
