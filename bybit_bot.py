@@ -228,28 +228,17 @@ def run_bot():
     
     exchange = init_bybit()
     
-    # Завантажуємо ф'ючерсні монети
-    startup_config = load_dynamic_config()
-    max_symbols = int(startup_config.get("max_symbols", 120))
-    symbol_offset = int(startup_config.get("symbol_offset", 0))
-
+    # Завантажуємо повний список доступних символів один раз
     all_symbols = get_all_usdt_symbols(exchange)
-    if symbol_offset > 0:
-        all_symbols = all_symbols[symbol_offset:] + all_symbols[:symbol_offset]
-    SYMBOLS = all_symbols[:max_symbols]
     cycle_index = 0
-    
-    global last_setup_bars
-    for sym in SYMBOLS:
-        last_setup_bars[sym] = None
 
     send_telegram_message(
         f"🚀 <b>SMC Racer (Мульти-Агентна версія)</b> активована!\n"
         f"Режим: <b>DEMO TRADING</b> (Плече 10x, Ризик 1%)\n"
-        f"Сканую <b>{len(SYMBOLS)}</b> ф'ючерсних пар на Bybit.\n"
+        f"Доступно пар на Bybit: <b>{len(all_symbols)}</b>.\n"
         f"Очікую сигнали..."
     )
-    print(f"[{datetime.now()}] Бот запущений. Торгуємо ВСІМА доступними парами ({len(SYMBOLS)} шт.) на демо рахунку.")
+    print(f"[{datetime.now()}] Бот запущений. Доступно {len(all_symbols)} пар на демо рахунку.")
 
     # Запускаємо перший цикл консенсусу ШІ-агентів через 10 секунд після старту
     last_agents_run = time.time() - 86000 # Запустить через 40 секунд після запуску бота
@@ -264,8 +253,25 @@ def run_bot():
         cycle_setups = 0
         cycle_invalid_symbols = 0
         cycle_rate_limits = 0
-        
-        cycle_symbols = select_symbols_for_scan(exchange, SYMBOLS, CONFIG, cycle_index)
+
+        max_symbols = max(1, int(CONFIG.get("max_symbols", 120)))
+        symbol_offset = int(CONFIG.get("symbol_offset", 0))
+        symbols_count = len(all_symbols)
+        if symbols_count == 0:
+            print(f"[{datetime.now()}] ⚠️ Немає символів для сканування")
+            time.sleep(60)
+            continue
+
+        normalized_offset = symbol_offset % symbols_count
+        rotated_symbols = all_symbols[normalized_offset:] + all_symbols[:normalized_offset]
+        symbol_window = rotated_symbols[:max_symbols]
+
+        global last_setup_bars
+        for sym in symbol_window:
+            if sym not in last_setup_bars:
+                last_setup_bars[sym] = None
+
+        cycle_symbols = select_symbols_for_scan(exchange, symbol_window, CONFIG, cycle_index)
 
         for symbol in cycle_symbols:
             try:
@@ -379,7 +385,7 @@ def run_bot():
         if time.time() - last_agents_run > 86400:
             try:
                 from cooperative_agents import run_cooperative_agent_consensus
-                run_cooperative_agent_consensus(exchange, SYMBOLS, TIMEFRAME, CONFIG_PATH)
+                run_cooperative_agent_consensus(exchange, symbol_window, TIMEFRAME, CONFIG_PATH)
                 last_agents_run = time.time()
             except Exception as ae:
                 print(f"Помилка запуску консенсусу агентів: {ae}")
