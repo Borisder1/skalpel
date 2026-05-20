@@ -3,6 +3,7 @@ import time
 import json
 import ccxt
 from ccxt.base.errors import RateLimitExceeded, BadSymbol
+from json import JSONDecodeError
 import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
@@ -75,6 +76,23 @@ def load_dynamic_config():
         try:
             with open(CONFIG_PATH, 'r') as f:
                 return json.load(f)
+        except JSONDecodeError as e:
+            print(f"Помилка завантаження active_config.json: {e}")
+            # Fallback: інколи після ручного merge в файлі залишається зайвий хвіст.
+            # Підхоплюємо перший валідний JSON-об'єкт, щоб бот не падав/не втрачав runtime-конфіг.
+            try:
+                with open(CONFIG_PATH, 'r') as f:
+                    raw = f.read()
+                decoder = json.JSONDecoder()
+                parsed, idx = decoder.raw_decode(raw.lstrip())
+                if isinstance(parsed, dict):
+                    print(
+                        f"[{datetime.now()}] ⚠️ active_config.json містить зайві дані після JSON (позиція {idx}). "
+                        "Використовуємо перший валідний об'єкт."
+                    )
+                    return parsed
+            except Exception as fallback_error:
+                print(f"[{datetime.now()}] ⚠️ Fallback-парсинг active_config.json не вдався: {fallback_error}")
         except Exception as e:
             print(f"Помилка завантаження active_config.json: {e}")
     
