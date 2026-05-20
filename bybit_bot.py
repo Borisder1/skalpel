@@ -22,6 +22,53 @@ TIMEFRAME = "15m"
 # Зберігаємо стан для кожної пари (остання свічка, де знайдено сетап)
 last_setup_bars = {}
 
+
+def build_runtime_config(base_config: dict, dry_cycles_without_setups: int) -> dict:
+    """Поступово послаблює фільтри, якщо ринок довго без сигналів."""
+    cfg = dict(base_config)
+
+    if dry_cycles_without_setups >= 3:
+        cfg["vol_mult"] = max(0.85, float(cfg.get("vol_mult", 1.1)) - 0.1)
+    if dry_cycles_without_setups >= 5:
+        cfg["fvg_min_size"] = max(0.05, float(cfg.get("fvg_min_size", 0.2)) - 0.05)
+    if dry_cycles_without_setups >= 7:
+        cfg["adx_thresh"] = max(8, int(cfg.get("adx_thresh", 15)) - 2)
+
+    return cfg
+
+
+
+def select_symbols_for_scan(exchange, symbols: list, config: dict, cycle_index: int) -> list:
+    """Режим розвідки: пріоритезує топ-ліквідні пари та ротує хвіст списку."""
+    max_symbols = int(config.get("max_symbols", 120))
+    scout_top_n = int(config.get("scout_top_n", 40))
+    rotate_step = int(config.get("rotate_step", 20))
+
+    if not symbols:
+        return []
+
+    try:
+        tickers = exchange.fetch_tickers(symbols)
+        def quote_volume(sym):
+            t = tickers.get(sym, {}) if isinstance(tickers, dict) else {}
+            return float(t.get("quoteVolume") or t.get("baseVolume") or 0.0)
+        ranked = sorted(symbols, key=quote_volume, reverse=True)
+    except Exception as e:
+        print(f"[{datetime.now()}] ⚠️ Не вдалося ранжувати по ліквідності: {e}")
+        ranked = list(symbols)
+
+    head = ranked[:max(0, min(scout_top_n, max_symbols))]
+    tail_pool = ranked[len(head):]
+
+    if not tail_pool or len(head) >= max_symbols:
+        return ranked[:max_symbols]
+
+    rotation_offset = (cycle_index * max(1, rotate_step)) % len(tail_pool)
+    rotated_tail = tail_pool[rotation_offset:] + tail_pool[:rotation_offset]
+    tail_needed = max_symbols - len(head)
+
+    return head + rotated_tail[:tail_needed]
+
 def load_dynamic_config():
     """Динамічно завантажує налаштування стратегії з active_config.json."""
     if os.path.exists(CONFIG_PATH):
@@ -43,6 +90,9 @@ def load_dynamic_config():
         "vol_mult": 1.1,
         "fvg_min_size": 0.2,
         "max_symbols": 120,
+        "symbol_offset": 0,
+        "scout_top_n": 40,
+        "rotate_step": 20
         "symbol_offset": 0
     }
 
@@ -179,6 +229,9 @@ def run_bot():
     
     exchange = init_bybit()
     
+    # Завантажуємо повний список доступних символів один раз
+    all_symbols = get_all_usdt_symbols(exchange)
+    cycle_index = 0
     # Завантажуємо ф'ючерсні монети
     max_symbols = int(load_dynamic_config().get("max_symbols", 120))
     symbol_offset = int(load_dynamic_config().get("symbol_offset", 0))
@@ -195,23 +248,50 @@ def run_bot():
     send_telegram_message(
         f"🚀 <b>SMC Racer (Мульти-Агентна версія)</b> активована!\n"
         f"Режим: <b>DEMO TRADING</b> (Плече 10x, Ризик 1%)\n"
-        f"Сканую <b>{len(SYMBOLS)}</b> ф'ючерсних пар на Bybit.\n"
+        f"Доступно пар на Bybit: <b>{len(all_symbols)}</b>.\n"
         f"Очікую сигнали..."
     )
-    print(f"[{datetime.now()}] Бот запущений. Торгуємо ВСІМА доступними парами ({len(SYMBOLS)} шт.) на демо рахунку.")
+    print(f"[{datetime.now()}] Бот запущений. Доступно {len(all_symbols)} пар на демо рахунку.")
 
     # Запускаємо перший цикл консенсусу ШІ-агентів через 10 секунд після старту
     last_agents_run = time.time() - 86000 # Запустить через 40 секунд після запуску бота
+    dry_cycles_without_setups = 0
+    last_health_ping = time.time()
 
     while True:
         # Динамічно завантажуємо конфігурацію на початку кожного сканування
-        CONFIG = load_dynamic_config()
-        
-        for symbol in SYMBOLS:
+        base_config = load_dynamic_config()
+        CONFIG = build_runtime_config(base_config, dry_cycles_without_setups)
+        cycle_scanned = 0
+        cycle_setups = 0
+        cycle_invalid_symbols = 0
+        cycle_rate_limits = 0
+
+        max_symbols = max(1, int(CONFIG.get("max_symbols", 120)))
+        symbol_offset = int(CONFIG.get("symbol_offset", 0))
+        symbols_count = len(all_symbols)
+        if symbols_count == 0:
+            print(f"[{datetime.now()}] ⚠️ Немає символів для сканування")
+            time.sleep(60)
+            continue
+
+        normalized_offset = symbol_offset % symbols_count
+        rotated_symbols = all_symbols[normalized_offset:] + all_symbols[:normalized_offset]
+        symbol_window = rotated_symbols[:max_symbols]
+
+        global last_setup_bars
+        for sym in symbol_window:
+            if sym not in last_setup_bars:
+                last_setup_bars[sym] = None
+
+        cycle_symbols = select_symbols_for_scan(exchange, symbol_window, CONFIG, cycle_index)
+
+        for symbol in cycle_symbols:
             try:
                 # 1. Завантажуємо 15m і 4h (HTF) дані
                 df = fetch_data(exchange, symbol, TIMEFRAME, limit=100)
                 htf_df = fetch_data(exchange, symbol, "4h", limit=50)
+                cycle_scanned += 1
 
                 # 2. Проганяємо логіку Racer
                 states = analyze_racer(df, htf_df, CONFIG)
@@ -222,6 +302,7 @@ def run_bot():
                     if last_setup_bars[symbol] != last_state.timestamp:
                         last_setup_bars[symbol] = last_state.timestamp
                         
+                        cycle_setups += 1
                         setup = last_state.setup
                         direction_str = "LONG 🟢" if setup.dir == 1 else "SHORT 🔴"
                         
@@ -265,6 +346,11 @@ def run_bot():
                 time.sleep(max(exchange.rateLimit / 1000.0, 0.35))
 
             except BadSymbol as e:
+                cycle_invalid_symbols += 1
+                print(f"[{datetime.now()}] ⚠️ Пропускаємо невалідний символ {symbol}: {e}")
+                continue
+            except RateLimitExceeded as e:
+                cycle_rate_limits += 1
                 print(f"[{datetime.now()}] ⚠️ Пропускаємо невалідний символ {symbol}: {e}")
                 continue
             except RateLimitExceeded as e:
@@ -273,6 +359,11 @@ def run_bot():
                 continue
             except Exception as e:
                 if "Symbol Is Invalid" in str(e):
+                    cycle_invalid_symbols += 1
+                    print(f"[{datetime.now()}] ⚠️ Пропускаємо невалідний символ {symbol}: {e}")
+                    continue
+                if "Too many visits" in str(e):
+                    cycle_rate_limits += 1
                     print(f"[{datetime.now()}] ⚠️ Пропускаємо невалідний символ {symbol}: {e}")
                     continue
                 if "Too many visits" in str(e):
@@ -283,11 +374,37 @@ def run_bot():
                 time.sleep(1)
                 continue
 
+
+        if cycle_setups == 0:
+            dry_cycles_without_setups += 1
+        else:
+            dry_cycles_without_setups = 0
+
+        print(
+            f"[{datetime.now()}] 📊 Цикл завершено | scanned={cycle_scanned} setups={cycle_setups} "
+            f"invalid={cycle_invalid_symbols} ratelimit={cycle_rate_limits} dry_cycles={dry_cycles_without_setups} "
+            f"cfg(adx={CONFIG.get('adx_thresh')}, vol={CONFIG.get('vol_mult')}, fvg={CONFIG.get('fvg_min_size')})"
+        )
+
+        if time.time() - last_health_ping > 7200:
+            send_telegram_message(
+                f"🩺 <b>Heartbeat SMC Racer</b>\n"
+                f"Скановано пар: <b>{cycle_scanned}</b>\n"
+                f"Сетапів за цикл: <b>{cycle_setups}</b>\n"
+                f"RateLimit помилок: <b>{cycle_rate_limits}</b>\n"
+                f"Invalid symbols: <b>{cycle_invalid_symbols}</b>\n"
+                f"Dry циклів поспіль: <b>{dry_cycles_without_setups}</b>\n"
+                f"Фільтри зараз → ADX: <b>{CONFIG.get('adx_thresh')}</b>, VOL: <b>{CONFIG.get('vol_mult')}</b>, FVG: <b>{CONFIG.get('fvg_min_size')}</b>"
+            )
+            last_health_ping = time.time()
+
+        cycle_index += 1
+
         # Перевірка для чергового запуску ШІ-агентів (раз на 24 години)
         if time.time() - last_agents_run > 86400:
             try:
                 from cooperative_agents import run_cooperative_agent_consensus
-                run_cooperative_agent_consensus(exchange, SYMBOLS, TIMEFRAME, CONFIG_PATH)
+                run_cooperative_agent_consensus(exchange, symbol_window, TIMEFRAME, CONFIG_PATH)
                 last_agents_run = time.time()
             except Exception as ae:
                 print(f"Помилка запуску консенсусу агентів: {ae}")

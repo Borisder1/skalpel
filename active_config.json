@@ -9,5 +9,9 @@
     "vol_mult": 1.1,
     "fvg_min_size": 0.2,
     "max_symbols": 120,
+    "symbol_offset": 0,
+    "scout_top_n": 40,
+    "rotate_step": 20
+}
     "symbol_offset": 0
 }
