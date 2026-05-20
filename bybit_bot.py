@@ -36,6 +36,39 @@ def build_runtime_config(base_config: dict, dry_cycles_without_setups: int) -> d
 
     return cfg
 
+
+
+def select_symbols_for_scan(exchange, symbols: list, config: dict, cycle_index: int) -> list:
+    """Режим розвідки: пріоритезує топ-ліквідні пари та ротує хвіст списку."""
+    max_symbols = int(config.get("max_symbols", 120))
+    scout_top_n = int(config.get("scout_top_n", 40))
+    rotate_step = int(config.get("rotate_step", 20))
+
+    if not symbols:
+        return []
+
+    try:
+        tickers = exchange.fetch_tickers(symbols)
+        def quote_volume(sym):
+            t = tickers.get(sym, {}) if isinstance(tickers, dict) else {}
+            return float(t.get("quoteVolume") or t.get("baseVolume") or 0.0)
+        ranked = sorted(symbols, key=quote_volume, reverse=True)
+    except Exception as e:
+        print(f"[{datetime.now()}] ⚠️ Не вдалося ранжувати по ліквідності: {e}")
+        ranked = list(symbols)
+
+    head = ranked[:max(0, min(scout_top_n, max_symbols))]
+    tail_pool = ranked[len(head):]
+
+    if not tail_pool or len(head) >= max_symbols:
+        return ranked[:max_symbols]
+
+    rotation_offset = (cycle_index * max(1, rotate_step)) % len(tail_pool)
+    rotated_tail = tail_pool[rotation_offset:] + tail_pool[:rotation_offset]
+    tail_needed = max_symbols - len(head)
+
+    return head + rotated_tail[:tail_needed]
+
 def load_dynamic_config():
     """Динамічно завантажує налаштування стратегії з active_config.json."""
     if os.path.exists(CONFIG_PATH):
@@ -57,7 +90,9 @@ def load_dynamic_config():
         "vol_mult": 1.1,
         "fvg_min_size": 0.2,
         "max_symbols": 120,
-        "symbol_offset": 0
+        "symbol_offset": 0,
+        "scout_top_n": 40,
+        "rotate_step": 20
     }
 
 def get_all_usdt_symbols(exchange, max_symbols=None):
@@ -194,13 +229,15 @@ def run_bot():
     exchange = init_bybit()
     
     # Завантажуємо ф'ючерсні монети
-    max_symbols = int(load_dynamic_config().get("max_symbols", 120))
-    symbol_offset = int(load_dynamic_config().get("symbol_offset", 0))
+    startup_config = load_dynamic_config()
+    max_symbols = int(startup_config.get("max_symbols", 120))
+    symbol_offset = int(startup_config.get("symbol_offset", 0))
 
     all_symbols = get_all_usdt_symbols(exchange)
     if symbol_offset > 0:
         all_symbols = all_symbols[symbol_offset:] + all_symbols[:symbol_offset]
     SYMBOLS = all_symbols[:max_symbols]
+    cycle_index = 0
     
     global last_setup_bars
     for sym in SYMBOLS:
@@ -228,7 +265,9 @@ def run_bot():
         cycle_invalid_symbols = 0
         cycle_rate_limits = 0
         
-        for symbol in SYMBOLS:
+        cycle_symbols = select_symbols_for_scan(exchange, SYMBOLS, CONFIG, cycle_index)
+
+        for symbol in cycle_symbols:
             try:
                 # 1. Завантажуємо 15m і 4h (HTF) дані
                 df = fetch_data(exchange, symbol, TIMEFRAME, limit=100)
@@ -333,6 +372,8 @@ def run_bot():
                 f"Фільтри зараз → ADX: <b>{CONFIG.get('adx_thresh')}</b>, VOL: <b>{CONFIG.get('vol_mult')}</b>, FVG: <b>{CONFIG.get('fvg_min_size')}</b>"
             )
             last_health_ping = time.time()
+
+        cycle_index += 1
 
         # Перевірка для чергового запуску ШІ-агентів (раз на 24 години)
         if time.time() - last_agents_run > 86400:
