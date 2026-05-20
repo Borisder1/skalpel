@@ -90,6 +90,14 @@ def load_dynamic_config():
                         f"[{datetime.now()}] ⚠️ active_config.json містить зайві дані після JSON (позиція {idx}). "
                         "Використовуємо перший валідний об'єкт."
                     )
+                    # Самолікування: перезаписуємо файл чистим JSON, щоб прибрати помилку назавжди.
+                    try:
+                        with open(CONFIG_PATH, 'w') as wf:
+                            json.dump(parsed, wf, ensure_ascii=False, indent=4)
+                            wf.write("\n")
+                        print(f"[{datetime.now()}] 🛠 active_config.json автоматично очищено від зайвих даних.")
+                    except Exception as write_error:
+                        print(f"[{datetime.now()}] ⚠️ Не вдалося авто-відновити active_config.json: {write_error}")
                     return parsed
             except Exception as fallback_error:
                 print(f"[{datetime.now()}] ⚠️ Fallback-парсинг active_config.json не вдався: {fallback_error}")
