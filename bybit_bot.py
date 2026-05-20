@@ -88,8 +88,8 @@ def run_bot():
     print(f"[{datetime.now()}] Бот запущений. Торгуємо ВСІМА доступними парами ({len(SYMBOLS)} шт.)")
 
     while True:
-        try:
-            for symbol in SYMBOLS:
+        for symbol in SYMBOLS:
+            try:
                 # 1. Завантажуємо 15m і 4h (HTF) дані
                 df = fetch_data(exchange, symbol, TIMEFRAME, limit=100)
                 htf_df = fetch_data(exchange, symbol, "4h", limit=50)
@@ -130,17 +130,19 @@ def run_bot():
                             fib=CONFIG["fib_level"],
                             sl_mult=CONFIG["sl_atr_mult"]
                         )
+                
+                # Невелика пауза між кожною монетою, щоб Bybit не заблокував (Rate Limit)
+                time.sleep(0.5)
 
-                        # ТУТ МАЄ БУТИ КОД exchange.create_order(...)
-                        # Наразі ми просто логуємо, щоб не ризикувати реальними лімітами
-                        # доки ти не перевіриш все очима.
+            except Exception as e:
+                # Якщо якась дивна/нова монета видає помилку, ми просто ігноруємо її і йдемо далі
+                if "Symbol Is Invalid" not in str(e):
+                    print(f"[{datetime.now()}] ⚠️ Помилка на {symbol}: {e}")
+                time.sleep(1)
+                continue
 
-            # Чекаємо перед наступним скануванням (наприклад, 1 хвилину)
-            time.sleep(60)
-
-        except Exception as e:
-            print(f"[{datetime.now()}] ⚠️ Помилка: {e}")
-            time.sleep(30) # Чекаємо і пробуємо знову
+        # Чекаємо перед наступним скануванням всього ринку
+        time.sleep(60)
 
 if __name__ == "__main__":
     run_bot()
