@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from racer_core import analyze_racer
 from telegram_notifier import send_telegram_message
 from db_logger import init_db, log_trade, update_trade_status
+from ai_signal_agent import generate_ai_signal
 
 load_dotenv()
 
@@ -270,6 +271,7 @@ def run_bot():
     last_agents_run = time.time() - 86000 # Запустить через 40 секунд після запуску бота
     dry_cycles_without_setups = 0
     last_health_ping = time.time()
+    last_ai_signal_ping = time.time()
 
     while True:
         # Динамічно завантажуємо конфігурацію на початку кожного сканування
@@ -404,6 +406,20 @@ def run_bot():
                 f"Фільтри зараз → ADX: <b>{CONFIG.get('adx_thresh')}</b>, VOL: <b>{CONFIG.get('vol_mult')}</b>, FVG: <b>{CONFIG.get('fvg_min_size')}</b>"
             )
             last_health_ping = time.time()
+
+        if cycle_setups == 0 and dry_cycles_without_setups >= 4 and (time.time() - last_ai_signal_ping > 1800):
+            ai_signal = generate_ai_signal(exchange, cycle_symbols, TIMEFRAME)
+            if ai_signal and ai_signal.get("direction") != "NONE":
+                send_telegram_message(
+                    f"🤖 <b>AI Advisory Signal</b>\n"
+                    f"Символ: <b>{ai_signal.get('symbol','N/A')}</b>\n"
+                    f"Напрямок: <b>{ai_signal.get('direction')}</b>\n"
+                    f"Впевненість: <b>{ai_signal.get('confidence')}</b>\n"
+                    f"Entry hint: <b>{ai_signal.get('entry_hint','-')}</b> | Stop hint: <b>{ai_signal.get('stop_hint','-')}</b>\n"
+                    f"Причина: {ai_signal.get('rationale','-')}"
+                )
+                print(f"[{datetime.now()}] 🤖 AI advisory signal sent: {ai_signal}")
+            last_ai_signal_ping = time.time()
 
         cycle_index += 1
 
