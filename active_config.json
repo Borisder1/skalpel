@@ -7,5 +7,9 @@
     "liq_lookback": 20,
     "adx_thresh": 15,
     "vol_mult": 1.1,
-    "fvg_min_size": 0.2
+    "fvg_min_size": 0.2,
+    "max_symbols": 120,
+    "symbol_offset": 0,
+    "scout_top_n": 40,
+    "rotate_step": 20
 }
