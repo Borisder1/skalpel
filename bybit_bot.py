@@ -457,6 +457,7 @@ def run_bot():
                 time.sleep(8)
                 continue
             except Exception as e:
+                import traceback
                 if "Symbol Is Invalid" in str(e):
                     cycle_invalid_symbols += 1
                     print(f"[{datetime.now()}] ⚠️ Пропускаємо невалідний символ {symbol}: {e}")
@@ -467,6 +468,7 @@ def run_bot():
                     time.sleep(8)
                     continue
                 print(f"[{datetime.now()}] ⚠️ Помилка на {symbol}: {e}")
+                print(traceback.format_exc())
                 time.sleep(1)
                 continue
 
