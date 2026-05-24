@@ -5,7 +5,7 @@ import ccxt
 from ccxt.base.errors import RateLimitExceeded, BadSymbol
 from json import JSONDecodeError
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 from racer_core import analyze_racer
@@ -20,6 +20,7 @@ API_SECRET = os.getenv("BYBIT_API_SECRET")
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'active_config.json')
 TIMEFRAME = "15m"
+MIN_CANDLES_REQUIRED = 50
 
 # Зберігаємо стан для кожної пари (остання свічка, де знайдено сетап)
 last_setup_bars = {}
@@ -222,6 +223,9 @@ def fetch_data(exchange, symbol, timeframe, limit=100):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
     df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+    if len(df) < MIN_CANDLES_REQUIRED:
+        print(f"[{datetime.now()}] ⚠️ Пропускаємо {symbol} {timeframe}: мало свічок ({len(df)})")
+        return None
     return df
 
 def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pct):
@@ -336,7 +340,7 @@ def run_bot():
         free_now = float((bal.get("USDT") or {}).get("free", 0.0) or 0.0) or 10000.0
         if session_start_equity is None:
             session_start_equity = free_now
-        today = datetime.utcnow().date()
+        today = datetime.now(timezone.utc).date()
         if day_marker != today:
             day_marker = today
             day_start_equity = free_now
@@ -350,6 +354,9 @@ def run_bot():
         cycle_setups = 0
         cycle_invalid_symbols = 0
         cycle_rate_limits = 0
+        pairs_with_enough_data = 0
+        pairs_with_valid_adx = 0
+        pairs_filtered_by_adx = 0
 
         max_symbols = max(1, int(CONFIG.get("max_symbols", 120)))
         symbol_offset = int(CONFIG.get("symbol_offset", 0))
@@ -375,11 +382,18 @@ def run_bot():
                 # 1. Завантажуємо 15m і 4h (HTF) дані
                 df = fetch_data(exchange, symbol, TIMEFRAME, limit=100)
                 htf_df = fetch_data(exchange, symbol, "4h", limit=50)
+                if df is None or htf_df is None:
+                    continue
+                pairs_with_enough_data += 1
                 cycle_scanned += 1
 
                 # 2. Проганяємо логіку Racer
                 states = analyze_racer(df, htf_df, CONFIG)
                 last_state = states[-1]
+                if not pd.isna(getattr(last_state, "adx", np.nan)):
+                    pairs_with_valid_adx += 1
+                    if float(last_state.adx) < float(getattr(last_state, "adx_threshold", CONFIG.get("adx_min", 12))):
+                        pairs_filtered_by_adx += 1
 
                 # 3. Перевіряємо сетап
                 if last_state.setup and last_state.setup.valid:
@@ -474,6 +488,8 @@ def run_bot():
             try:
                 df = fetch_data(exchange, symbol, TIMEFRAME, limit=100)
                 htf_df = fetch_data(exchange, symbol, "4h", limit=50)
+                if df is None or htf_df is None:
+                    continue
                 st = analyze_racer(df, htf_df, CONFIG)[-1]
                 adx_v = float(st.adx) if not pd.isna(st.adx) else 0.0
                 adx_t = float(getattr(st, "adx_threshold", CONFIG.get("adx_min", CONFIG.get("adx_thresh", 15))))
@@ -503,6 +519,9 @@ def run_bot():
                 f"RateLimit помилок: <b>{cycle_rate_limits}</b>\n"
                 f"Invalid symbols: <b>{cycle_invalid_symbols}</b>\n"
                 f"Dry циклів поспіль: <b>{dry_cycles_without_setups}</b>\n"
+                f"Пар з достатньо даних: <b>{pairs_with_enough_data}</b> / <b>{len(cycle_symbols)}</b>\n"
+                f"Пар з валідним ADX: <b>{pairs_with_valid_adx}</b> / <b>{len(cycle_symbols)}</b>\n"
+                f"Пар відфільтровано (ADX < поріг): <b>{pairs_filtered_by_adx}</b>\n"
                 f"Фільтри зараз → ADX: <b>{CONFIG.get('adx_thresh')}</b>, VOL: <b>{CONFIG.get('vol_multiplier_min', CONFIG.get('vol_mult'))}</b>, FVG: <b>{CONFIG.get('fvg_min_size')}</b>\n"
                 f"Остання пара з найближчим сетапом: <b>{diag_pair or 'n/a'}</b>\n"
                 f"├── {adx_line}\n├── {vol_line}\n└── {fvg_line}"

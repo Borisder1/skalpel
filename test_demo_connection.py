@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 import ccxt
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "active_config.json")
@@ -35,7 +35,7 @@ def main():
         "options": {"defaultType": "future", "recvWindow": 10000},
     })
 
-    print(f"[{datetime.utcnow().isoformat()}] Using base URL: {base_url}")
+    print(f"[{datetime.now(timezone.utc).isoformat()}] Using base URL: {base_url}")
 
     try:
         exchange.enableDemoTrading(True)
