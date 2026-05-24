@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 from openai import OpenAI
 
@@ -48,7 +48,7 @@ def generate_ai_signal(exchange, symbols, timeframe="15m"):
         "direction must be LONG, SHORT, or NONE. confidence 0..1."
     )
     user = {
-        "time": str(datetime.utcnow()),
+        "time": str(datetime.now(timezone.utc)),
         "timeframe": timeframe,
         "market": market_snap,
     }

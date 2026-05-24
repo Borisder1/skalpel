@@ -32,8 +32,7 @@ class RacerEngine:
 
     def run(self, bars: list, symbol: str = "BTCUSDT") -> dict:
         equity = self.config.get("initial_equity", 10000.0)
-        risk_pct = min(float(self.config.get("risk_pct", 1.0)), 1.0)  # FIXED: cap risk/trade
-        max_dd_stop = float(self.config.get("max_drawdown_stop_pct", 20.0))
+        risk_pct = self.config.get("risk_pct", 1.0)
         
         self.trades = []
         self.equity_curve = [equity]
@@ -52,10 +51,7 @@ class RacerEngine:
         
         qty_remaining = 1.0
         
-        peak_equity = equity
         for bar in bars:
-            peak_equity = max(peak_equity, equity)
-            dd_pct = (peak_equity - equity) / max(peak_equity, 1.0) * 100.0
             if in_pos:
                 close_trade = False
                 exit_price = bar.c
@@ -131,10 +127,6 @@ class RacerEngine:
             self.equity_curve.append(equity)
             
             # Entry logic (Limit orders simulated by checking if low <= entry for long, high >= entry for short)
-            # FIXED: risk guard зупиняє нові входи після критичного DD.
-            if not in_pos and dd_pct >= max_dd_stop:
-                self.equity_curve.append(equity)
-                continue
             if not in_pos and bar.setup.valid:
                 setup = bar.setup
                 
