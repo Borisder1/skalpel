@@ -2,6 +2,7 @@ import os
 import time
 import json
 import ccxt
+import numpy as np
 from ccxt.base.errors import RateLimitExceeded, BadSymbol
 from json import JSONDecodeError
 import pandas as pd

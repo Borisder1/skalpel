@@ -145,8 +145,8 @@ def analyze_racer(df: pd.DataFrame, htf_df: pd.DataFrame, config: dict):
     for i in range(n):
         adx_lb = max(0, i - adx_adaptive_window + 1)
         adx_slice = adx[adx_lb:i + 1]
-        valid = adx_slice[~np.isnan(adx_slice)]
-        adx_avg = float(np.mean(valid)) if len(valid) >= 5 else np.nan
+        _valid = adx_slice[~np.isnan(adx_slice)] if len(adx_slice) > 0 else np.array([])
+        adx_avg = float(np.mean(_valid)) if len(_valid) >= 3 else np.nan
         adaptive_adx_thresh = max(float(adx_min), float(adx_avg) * float(adx_adaptive_factor)) if not np.isnan(adx_avg) else float(adx_min)
         is_side = adx[i] < adaptive_adx_thresh if not np.isnan(adx[i]) else True
         rel_vol = v[i] / max(vol_ma[i], 1e-10) if not np.isnan(vol_ma[i]) and vol_ma[i] > 0 else 0.0
