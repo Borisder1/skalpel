@@ -13,6 +13,7 @@ from racer_core import analyze_racer
 from telegram_notifier import send_telegram_message
 from db_logger import init_db, log_trade, update_trade_status
 from ai_signal_agent import generate_ai_signal
+from adaptive_filters import AdaptiveFilterManager
 
 load_dotenv()
 
@@ -314,6 +315,7 @@ def run_bot():
     # Завантажуємо повний список доступних символів один раз
     all_symbols = get_all_usdt_symbols(exchange)
     cycle_index = 0
+    filter_manager = AdaptiveFilterManager()
     session_start_equity = None
     day_start_equity = None
     day_marker = None
@@ -336,6 +338,11 @@ def run_bot():
         # Динамічно завантажуємо конфігурацію на початку кожного сканування
         base_config = load_dynamic_config()
         CONFIG = build_runtime_config(base_config, dry_cycles_without_setups)
+        active_filters = filter_manager.get_filters()
+        CONFIG["adx_min"] = active_filters["adx"]
+        CONFIG["vol_multiplier_min"] = active_filters["vol"]
+        CONFIG["vol_mult"] = min(float(CONFIG.get("vol_mult", 1.0)), float(active_filters["vol"]))
+        CONFIG["fvg_min_size"] = active_filters["fvg"]
         # FIXED: max drawdown + daily loss guard перед скануванням/ордерами.
         bal = safe_api_call(exchange.fetch_balance) or {}
         free_now = float((bal.get("USDT") or {}).get("free", 0.0) or 0.0) or 10000.0
@@ -478,10 +485,28 @@ def run_bot():
         else:
             dry_cycles_without_setups = 0
 
+        ladder_result = filter_manager.report_cycle(setups_found=cycle_setups)
+        if ladder_result["changed"]:
+            old = AdaptiveFilterManager.LADDER[ladder_result["old_level"]]["label"]
+            new = AdaptiveFilterManager.LADDER[ladder_result["new_level"]]["label"]
+            if ladder_result["new_level"] > ladder_result["old_level"]:
+                print(f"[{datetime.now()}] 📉 ФІЛЬТРИ ЗНИЖЕНО: {old} → {new} (dry streak досяг ліміту)")
+            else:
+                print(f"[{datetime.now()}] 📈 ФІЛЬТРИ ПІДВИЩЕНО: {old} → {new} (стратегія знову працює)")
+        if ladder_result["is_diagnostic"]:
+            print(f"[{datetime.now()}] 🔬 DIAGNOSTIC MODE: ринок без чіткої структури. Збір даних без торгівлі.")
+            ai_diag = generate_ai_signal(exchange, cycle_symbols, TIMEFRAME)
+            if ai_diag:
+                print(f"[{datetime.now()}] 🤖 AI діагноз режиму: {ai_diag}")
+                conf = float(ai_diag.get('confidence', 0.0) or 0.0)
+                if ai_diag.get("direction") in {"LONG", "SHORT"} and conf >= 0.7:
+                    filter_manager.current_level = 2
+                    print(f"[{datetime.now()}] 🤖 AI: виявлено прихований тренд → повертаємось на RELAXED")
+
         print(
             f"[{datetime.now()}] 📊 Цикл завершено | scanned={cycle_scanned} setups={cycle_setups} "
             f"invalid={cycle_invalid_symbols} ratelimit={cycle_rate_limits} dry_cycles={dry_cycles_without_setups} "
-            f"cfg(adx={CONFIG.get('adx_thresh')}, vol={CONFIG.get('vol_mult')}, fvg={CONFIG.get('fvg_min_size')})"
+            f"{filter_manager.get_status()}"
         )
         # Heartbeat diagnostics source: остання пара з найменшим запасом до ADX порогу
         diag_pair = None
