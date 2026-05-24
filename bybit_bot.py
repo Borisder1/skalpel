@@ -365,6 +365,11 @@ def run_bot():
         pairs_with_enough_data = 0
         pairs_with_valid_adx = 0
         pairs_filtered_by_adx = 0
+        adx_fail = 0
+        vol_fail = 0
+        fvg_fail = 0
+        passed_all = 0
+        debug_logged = False
 
         max_symbols = max(1, int(CONFIG.get("max_symbols", 120)))
         symbol_offset = int(CONFIG.get("symbol_offset", 0))
@@ -400,8 +405,33 @@ def run_bot():
                 last_state = states[-1]
                 if not pd.isna(getattr(last_state, "adx", np.nan)):
                     pairs_with_valid_adx += 1
-                    if float(last_state.adx) < float(getattr(last_state, "adx_threshold", CONFIG.get("adx_min", 12))):
+                    adx_v = float(last_state.adx)
+                    adx_t = float(getattr(last_state, "adx_threshold", CONFIG.get("adx_min", 12)))
+                    vol_v = float(getattr(last_state, "rel_vol", 0.0))
+                    vol_t = float(CONFIG.get("vol_multiplier_min", CONFIG.get("vol_mult", 1.0)))
+                    fvg_v = float(getattr(last_state, "fvg_size_atr", 0.0))
+                    fvg_t = float(CONFIG.get("fvg_min_size", 0.08))
+                    if adx_v < adx_t:
                         pairs_filtered_by_adx += 1
+                        adx_fail += 1
+                        if not debug_logged:
+                            print(f"[{datetime.now()}] DEBUG {symbol}: ADX={adx_v:.2f} < {adx_t:.2f} ❌")
+                            debug_logged = True
+                    elif vol_v < vol_t:
+                        vol_fail += 1
+                        if not debug_logged:
+                            print(f"[{datetime.now()}] DEBUG {symbol}: VOL={vol_v:.2f} < {vol_t:.2f} ❌")
+                            debug_logged = True
+                    elif fvg_v < fvg_t:
+                        fvg_fail += 1
+                        if not debug_logged:
+                            print(f"[{datetime.now()}] DEBUG {symbol}: FVG={fvg_v:.4f} < {fvg_t:.4f} ❌")
+                            debug_logged = True
+                    else:
+                        passed_all += 1
+                        if not debug_logged:
+                            print(f"[{datetime.now()}] DEBUG {symbol}: всі фільтри ✅ але сетап не знайдено")
+                            debug_logged = True
 
                 # 3. Перевіряємо сетап
                 if last_state.setup and last_state.setup.valid:
@@ -507,6 +537,13 @@ def run_bot():
             f"[{datetime.now()}] 📊 Цикл завершено | scanned={cycle_scanned} setups={cycle_setups} "
             f"invalid={cycle_invalid_symbols} ratelimit={cycle_rate_limits} dry_cycles={dry_cycles_without_setups} "
             f"{filter_manager.get_status()}"
+        )
+        print(
+            f"[{datetime.now()}] Статистика фільтрів: "
+            f"ADX fail={adx_fail}/{len(cycle_symbols)} | "
+            f"VOL fail={vol_fail}/{len(cycle_symbols)} | "
+            f"FVG fail={fvg_fail}/{len(cycle_symbols)} | "
+            f"Пройшли всі={passed_all}/{len(cycle_symbols)}"
         )
         # Heartbeat diagnostics source: остання пара з найменшим запасом до ADX порогу
         diag_pair = None

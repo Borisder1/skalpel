@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from datetime import datetime, timezone
 
 from openai import OpenAI
@@ -53,18 +54,38 @@ def generate_ai_signal(exchange, symbols, timeframe="15m"):
         "market": market_snap,
     }
 
+    def call_ai_api_with_retry(max_retries=3):
+        for attempt in range(max_retries):
+            try:
+                return client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+                    ],
+                    temperature=0.2,
+                    top_p=0.9,
+                    max_tokens=400,
+                )
+            except Exception as e:
+                if "429" in str(e):
+                    wait = (2 ** attempt) * 10
+                    print(f"[AI Signal Agent] AI API rate limit, чекаємо {wait}s...")
+                    time.sleep(wait)
+                else:
+                    print(f"[AI Signal Agent] AI API помилка: {e}")
+                    return None
+        return None
+
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
-            ],
-            temperature=0.2,
-            top_p=0.9,
-            max_tokens=400,
-        )
-        text = resp.choices[0].message.content.strip()
+        resp = call_ai_api_with_retry(max_retries=3)
+        if resp is None:
+            return None
+        content = resp.choices[0].message.content if resp.choices and resp.choices[0].message else None
+        if content is None:
+            print("[AI Signal Agent] AI API повернув None")
+            return None
+        text = content.strip()
         data = json.loads(text)
         if data.get("direction") not in {"LONG", "SHORT", "NONE"}:
             return None
