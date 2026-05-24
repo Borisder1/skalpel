@@ -42,23 +42,18 @@ init_db()
 async def handle_webhook(request: Request):
     try:
         data = await request.json()
-        # FIXED: захист від KeyError при неповному payload.
-        evt_type = data.get("type", "UNKNOWN")
-        ticker = data.get("ticker", "UNKNOWN")
-        price = data.get("price")
-        print(f"\n[🚀 {evt_type}] {ticker} @ {price}")
+        print(f"\n[🚀 {data['type']}] {data['ticker']} @ {data['price']}")
         
         # Log to Database
-        # FIXED: context manager, щоб не втрачати транзакції при помилках.
-        with sqlite3.connect('smc_diagnostics.db') as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
+        conn = sqlite3.connect('smc_diagnostics.db')
+        cursor = conn.cursor()
+        cursor.execute('''
             INSERT INTO signals (
                 timestamp, type, ticker, tf, price, trend, status, 
                 direction, grade, entry, stop, tp1, qty, score, 
                 pattern, probability, block_reason, msg
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
+        ''', (
             datetime.now().isoformat(),
             data.get('type'),
             data.get('ticker'),
@@ -77,10 +72,12 @@ async def handle_webhook(request: Request):
             data.get('diag', {}).get('prob'),
             data.get('diag', {}).get('blockReason'),
             data.get('msg')
-            ))
+        ))
+        conn.commit()
+        conn.close()
         
         # Simple Analysis Logic (Future evolution)
-        if evt_type == 'EXIT':
+        if data['type'] == 'EXIT':
             print(f"   📊 Trade Finished: {data['msg']}")
         
         return {"status": "success"}
