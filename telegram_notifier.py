@@ -34,18 +34,18 @@ def send_signal(token, chat_id, signal):
     text = (
         f"⚡ *{emoji} | {symbol}*\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"📍 Вхід:  `{fp(signal['entry'])}`\n"
-        f"🛡 SL:    `{fp(signal['sl'])}`\n"
-        f"🎯 TP1:  `{fp(signal['tp1'])}`\n"
-        f"🎯 TP2:  `{fp(signal['tp2'])}`\n"
+        f"📍 Вхід:  *{fp(signal['entry'])}*\n"
+        f"🛡 SL:    *{fp(signal['sl'])}*\n"
+        f"🎯 TP1:  *{fp(signal['tp1'])}*\n"
+        f"🎯 TP2:  *{fp(signal['tp2'])}*\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"📊 R:R = 1:{rr} \\| ATR={atr_str}\n"
-        f"🕐 {datetime.now().strftime('%H:%M %d\\.%m')}"
+        f"📊 R:R = 1:{rr} | ATR={atr_str}\n"
+        f"🕐 {datetime.now().strftime('%H:%M %d.%m')}"
     )
 
     resp = requests.post(
         f"https://api.telegram.org/bot{token}/sendMessage",
-        json={"chat_id": chat_id, "text": text, "parse_mode": "MarkdownV2"},
+        json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
         timeout=10,
     )
     try:
@@ -65,16 +65,16 @@ def send_position_opened(token, chat_id, pos):
         f"✅ *ПОЗИЦІЯ ВІДКРИТА*\n"
         f"━━━━━━━━━━━━━━━\n"
         f"{emoji} *{side} | {symbol}*\n"
-        f"📍 Ціна входу: `{pos['entry_price']}`\n"
-        f"📦 Розмір: `{pos['qty']}`\n"
-        f"🛡 SL: `{pos['sl']}`\n"
-        f"🎯 TP: `{pos['tp']}`\n"
+        f"📍 Ціна входу: *{pos['entry_price']}*\n"
+        f"📦 Розмір: *{pos['qty']}*\n"
+        f"🛡 SL: *{pos['sl']}*\n"
+        f"🎯 TP: *{pos['tp']}*\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"🕐 {datetime.now().strftime('%H:%M %d\\.%m')}"
+        f"🕐 {datetime.now().strftime('%H:%M %d.%m')}"
     )
     return requests.post(
         f"https://api.telegram.org/bot{token}/sendMessage",
-        json={"chat_id": chat_id, "text": text, "parse_mode": "MarkdownV2"},
+        json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
         timeout=10,
     )
 
@@ -88,15 +88,15 @@ def send_position_closed(token, chat_id, pos):
         f"{pnl_emoji} *ПОЗИЦІЯ ЗАКРИТА*\n"
         f"━━━━━━━━━━━━━━━\n"
         f"*{symbol}*\n"
-        f"📍 Вхід:  `{pos['entry_price']}`\n"
-        f"📍 Вихід: `{pos['exit_price']}`\n"
+        f"📍 Вхід:  *{pos['entry_price']}*\n"
+        f"📍 Вихід: *{pos['exit_price']}*\n"
         f"━━━━━━━━━━━━━━━\n"
         f"📊 PnL: *{pnl_sign}{pnl:.4f} USDT*\n"
-        f"🕐 {datetime.now().strftime('%H:%M %d\\.%m')}"
+        f"🕐 {datetime.now().strftime('%H:%M %d.%m')}"
     )
     return requests.post(
         f"https://api.telegram.org/bot{token}/sendMessage",
-        json={"chat_id": chat_id, "text": text, "parse_mode": "MarkdownV2"},
+        json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
         timeout=10,
     )
 
@@ -115,7 +115,7 @@ def send_signal_with_buttons(token, chat_id, signal):
     }
     return requests.post(
         f"https://api.telegram.org/bot{token}/sendMessage",
-        json={"chat_id": chat_id, "text": text, "parse_mode": "MarkdownV2", "reply_markup": keyboard},
+        json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "reply_markup": keyboard},
         timeout=10,
     )
 
@@ -161,7 +161,7 @@ def send_telegram_message(message: str):
     try:
         response = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "MarkdownV2"},
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"},
             timeout=10
         )
         if response.status_code != 200:

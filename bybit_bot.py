@@ -3,6 +3,7 @@ import time
 import json
 import ccxt
 import numpy as np
+import requests
 from ccxt.base.errors import RateLimitExceeded, BadSymbol
 from json import JSONDecodeError
 import pandas as pd
@@ -22,6 +23,7 @@ from telegram_notifier import (
 from db_logger import init_db, log_trade, update_trade_status
 from ai_signal_agent import generate_ai_signal
 from adaptive_filters import AdaptiveFilterManager
+from pnl_tracker import record_trade, get_summary
 
 load_dotenv()
 
@@ -377,14 +379,17 @@ def run_bot():
     confirmation_timeout_sec = int(startup_config.get("confirmation_timeout_sec", 120))
     pending_signals = {}
     exchange = init_bybit(startup_config)
+    start_bal_info = safe_api_call(exchange.fetch_balance) or {}
+    session_start_equity = float((start_bal_info.get("USDT") or {}).get("free", 0.0) or 0.0) or 10000.0
+    day_start_equity = session_start_equity
+    print(f"[{datetime.now()}] 💰 Стартовий баланс сесії: {session_start_equity:.4f} USDT")
     
     # Завантажуємо повний список доступних символів один раз
     all_symbols = get_all_usdt_symbols(exchange)
     cycle_index = 0
     filter_manager = AdaptiveFilterManager()
-    session_start_equity = None
-    day_start_equity = None
     day_marker = None
+    last_daily_report_day = None
 
     send_telegram_message(
         f"🚀 <b>SMC Racer (Мульти-Агентна версія)</b> активована!\n"
@@ -412,18 +417,33 @@ def run_bot():
         # FIXED: max drawdown + daily loss guard перед скануванням/ордерами.
         bal = safe_api_call(exchange.fetch_balance) or {}
         free_now = float((bal.get("USDT") or {}).get("free", 0.0) or 0.0) or 10000.0
-        if session_start_equity is None:
-            session_start_equity = free_now
         today = datetime.now(timezone.utc).date()
         if day_marker != today:
             day_marker = today
             day_start_equity = free_now
+            session_start_equity = free_now
+            last_daily_report_day = day_marker
         session_dd = ((session_start_equity - free_now) / max(session_start_equity, 1.0)) * 100.0
         daily_dd = ((day_start_equity - free_now) / max(day_start_equity, 1.0)) * 100.0
         if session_dd >= max_session_drawdown_pct or daily_dd >= max_daily_loss_pct:
             print(f"[{datetime.now()}] 🛑 Risk guard stop: session_dd={session_dd:.2f}% daily_dd={daily_dd:.2f}%")
             time.sleep(60)
             continue
+        # Щоденний звіт о 23:59 UTC
+        now_utc = datetime.now(timezone.utc)
+        if now_utc.hour == 23 and now_utc.minute >= 59:
+            if last_daily_report_day != now_utc.date():
+                summary = get_summary()
+                requests.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                    json={
+                        "chat_id": TELEGRAM_CHAT_ID,
+                        "text": f"🌙 *Підсумок дня*\n{summary}",
+                        "parse_mode": "Markdown",
+                    },
+                    timeout=10,
+                )
+                last_daily_report_day = now_utc.date()
         if require_confirmation and TELEGRAM_BOT_TOKEN:
             poll_telegram_callbacks(TELEGRAM_BOT_TOKEN, pending_signals)
         cycle_scanned = 0
