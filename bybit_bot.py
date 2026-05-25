@@ -27,6 +27,16 @@ DEBUG_PAIRS = {"BEAT/USDT:USDT", "BILL/USDT:USDT"}
 
 
 def format_signal(signal: dict) -> str:
+    def fmt_price(p: float) -> str:
+        if p >= 1:
+            return f"{p:.4f}"
+        elif p >= 0.01:
+            return f"{p:.5f}"
+        elif p >= 0.001:
+            return f"{p:.6f}"
+        else:
+            return f"{p:.8f}"
+
     direction = signal["direction"]
     symbol = signal["symbol"].replace("/USDT:USDT", "")
     emoji = "🟢 LONG" if direction == "LONG" else "🔴 SHORT"
@@ -37,16 +47,17 @@ def format_signal(signal: dict) -> str:
     risk = abs(entry - sl)
     reward = abs(tp1 - entry)
     rr = round(reward / risk, 1) if risk > 0 else 0
-    atr = signal.get("atr", "N/A")
+    atr_val = float(signal.get("atr", 0) or 0)
+    atr_str = f"{atr_val:.6f}" if atr_val < 0.001 else f"{atr_val:.4f}"
     return (
         f"⚡ <b>{emoji} | {symbol}</b>\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"📍 Вхід:  <b>{entry:.6f}</b>\n"
-        f"🛡 SL:    <b>{sl:.6f}</b>\n"
-        f"🎯 TP1:  <b>{tp1:.6f}</b>\n"
-        f"🎯 TP2:  <b>{tp2:.6f}</b>\n"
+        f"📍 Вхід:  <b>{fmt_price(entry)}</b>\n"
+        f"🛡 SL:    <b>{fmt_price(sl)}</b>\n"
+        f"🎯 TP1:  <b>{fmt_price(tp1)}</b>\n"
+        f"🎯 TP2:  <b>{fmt_price(tp2)}</b>\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"📊 R:R = 1:{rr} | ATR={atr}\n"
+        f"📊 R:R = 1:{rr} | ATR={atr_str}\n"
         f"🕐 {datetime.now().strftime('%H:%M %d.%m')}"
     )
 
