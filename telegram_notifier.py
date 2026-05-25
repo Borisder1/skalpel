@@ -10,6 +10,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 logger = logging.getLogger(__name__)
 _LAST_UPDATE_ID = 0
+_PROCESSED_CALLBACKS = set()
 
 def send_signal(token, chat_id, signal):
     direction = signal["direction"]
@@ -166,6 +167,11 @@ def poll_telegram_callbacks(token, pending_signals):
         callback = update.get("callback_query")
         if not callback:
             continue
+        cb_id = callback.get("id")
+        if cb_id in _PROCESSED_CALLBACKS:
+            continue
+        if cb_id:
+            _PROCESSED_CALLBACKS.add(cb_id)
         data = callback.get("data", "")
         if data.startswith("confirm_"):
             signal_id = data.replace("confirm_", "")

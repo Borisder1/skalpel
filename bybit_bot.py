@@ -1,5 +1,6 @@
 import os
 import time
+import threading
 import json
 import ccxt
 import numpy as np
@@ -378,6 +379,7 @@ def run_bot():
     require_confirmation = bool(startup_config.get("require_confirmation", False))
     confirmation_timeout_sec = int(startup_config.get("confirmation_timeout_sec", 120))
     pending_signals = {}
+    pending_lock = threading.Lock()
     exchange = init_bybit(startup_config)
     start_bal_info = safe_api_call(exchange.fetch_balance) or {}
     session_start_equity = float((start_bal_info.get("USDT") or {}).get("free", 0.0) or 0.0) or 10000.0
@@ -398,6 +400,15 @@ def run_bot():
         f"Очікую сигнали..."
     )
     print(f"[{datetime.now()}] Бот запущений. Доступно {len(all_symbols)} пар на демо рахунку.")
+
+    if require_confirmation and TELEGRAM_BOT_TOKEN:
+        def _tg_callback_loop():
+            while True:
+                with pending_lock:
+                    poll_telegram_callbacks(TELEGRAM_BOT_TOKEN, pending_signals)
+                time.sleep(0.8)
+        threading.Thread(target=_tg_callback_loop, name="tg-callback-poller", daemon=True).start()
+        print(f"[{datetime.now()}] ✅ Telegram callback poller запущено в окремому потоці")
 
     # Запускаємо перший цикл консенсусу ШІ-агентів через 10 секунд після старту
     last_agents_run = time.time() - 86000 # Запустить через 40 секунд після запуску бота
@@ -445,16 +456,10 @@ def run_bot():
                 )
                 last_daily_report_day = now_utc.date()
         if require_confirmation and TELEGRAM_BOT_TOKEN:
-            poll_telegram_callbacks(TELEGRAM_BOT_TOKEN, pending_signals)
             # Обробка підтверджених/протермінованих сигналів з попередніх циклів
-            for sid, pending in list(pending_signals.items()):
-                if pending.get("approved") is False:
-                    pending_signals.pop(sid, None)
-                    continue
-                if (time.time() - pending.get("created_at", time.time())) > confirmation_timeout_sec:
-                    pending_signals.pop(sid, None)
-                    send_telegram_message(f"⌛ Сигнал скасовано по таймауту: {pending['signal']['symbol']}")
-                    continue
+            with pending_lock:
+                snapshot_pending = list(pending_signals.items())
+            for sid, pending in snapshot_pending:
                 if pending.get("approved") is True:
                     sig = pending["signal"]
                     direction = sig["direction"]
@@ -463,6 +468,7 @@ def run_bot():
                     long_count = sum(1 for p in positions if str(p.get("side") or p.get("info", {}).get("side", "")).lower() in {"buy", "long"})
                     short_count = sum(1 for p in positions if str(p.get("side") or p.get("info", {}).get("side", "")).lower() in {"sell", "short"})
                     if can_open_position(direction, {"long_count": long_count, "short_count": short_count}):
+                        print(f"[{datetime.now()}] 📤 Підтверджений сигнал, відправляємо ордер на DEMO: {symbol} {direction}")
                         order = execute_demo_order(
                             exchange=exchange,
                             symbol=symbol,
@@ -482,7 +488,18 @@ def run_bot():
                                 "sl": sig["sl"],
                                 "tp": sig["tp2"],
                             })
-                    pending_signals.pop(sid, None)
+                    with pending_lock:
+                        pending_signals.pop(sid, None)
+                    continue
+                if pending.get("approved") is False:
+                    with pending_lock:
+                        pending_signals.pop(sid, None)
+                    continue
+                if (time.time() - pending.get("created_at", time.time())) > confirmation_timeout_sec:
+                    with pending_lock:
+                        pending_signals.pop(sid, None)
+                    send_telegram_message(f"⌛ Сигнал скасовано по таймауту: {pending['signal']['symbol']}")
+                    continue
         cycle_scanned = 0
         cycle_setups = 0
         cycle_invalid_symbols = 0
@@ -603,7 +620,8 @@ def run_bot():
                         # Сповіщення в Telegram
                         if require_confirmation and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
                             signal_id = f"{symbol}-{int(time.time())}"
-                            pending_signals[signal_id] = {"signal": signal_payload, "created_at": time.time(), "approved": None}
+                            with pending_lock:
+                                pending_signals[signal_id] = {"signal": signal_payload, "created_at": time.time(), "approved": None}
                             send_signal_with_buttons(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, {**signal_payload, "id": signal_id})
                             continue
                         else:
