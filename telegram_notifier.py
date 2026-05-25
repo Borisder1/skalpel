@@ -106,7 +106,29 @@ def send_signal_with_buttons(token, chat_id, signal):
     direction = signal["direction"]
     symbol = signal["symbol"].replace("/USDT:USDT", "").replace("/USDT", "")
     emoji = "🟢 LONG" if direction == "LONG" else "🔴 SHORT"
-    text = f"⚡ *{emoji} | {symbol}*\nПідтвердити відкриття позиції?"
+    def fp(p):
+        p = float(p)
+        if p >= 1:
+            return f"{p:.4f}"
+        elif p >= 0.01:
+            return f"{p:.5f}"
+        elif p >= 0.001:
+            return f"{p:.6f}"
+        return f"{p:.8f}"
+
+    atr = float(signal.get("atr", 0) or 0)
+    atr_str = f"{atr:.6f}" if atr < 0.001 else f"{atr:.4f}"
+    text = (
+        f"⚡ *{emoji} | {symbol}*\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"📍 Вхід: *{fp(signal['entry'])}*\n"
+        f"🛡 SL: *{fp(signal['sl'])}*\n"
+        f"🎯 TP1: *{fp(signal['tp1'])}*\n"
+        f"🎯 TP2: *{fp(signal['tp2'])}*\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"📊 ATR={atr_str}\n"
+        f"Підтвердити відкриття позиції?"
+    )
     keyboard = {
         "inline_keyboard": [[
             {"text": "✅ Відкрити позицію", "callback_data": f"confirm_{signal_id}"},
@@ -151,11 +173,29 @@ def poll_telegram_callbacks(token, pending_signals):
             if sig:
                 sig["approved"] = True
                 answer_callback(token, callback["id"], "✅ Ордер відкрито!")
+                requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={
+                        "chat_id": callback["message"]["chat"]["id"],
+                        "text": f"✅ Підтверджено: {sig['signal']['direction']} {sig['signal']['symbol']}",
+                        "parse_mode": "Markdown",
+                    },
+                    timeout=10,
+                )
         elif data.startswith("skip_"):
             signal_id = data.replace("skip_", "")
             if signal_id in pending_signals:
                 pending_signals[signal_id]["approved"] = False
             answer_callback(token, callback["id"], "❌ Пропущено")
+            requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={
+                    "chat_id": callback["message"]["chat"]["id"],
+                    "text": f"❌ Скасовано: {signal_id}",
+                    "parse_mode": "Markdown",
+                },
+                timeout=10,
+            )
 
 
 def send_telegram_message(message: str):
@@ -165,7 +205,7 @@ def send_telegram_message(message: str):
     try:
         response = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": message},
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"},
             timeout=10
         )
         if response.status_code != 200:
