@@ -25,6 +25,31 @@ TIMEFRAME = "15m"
 MIN_CANDLES_REQUIRED = 50
 DEBUG_PAIRS = {"BEAT/USDT:USDT", "BILL/USDT:USDT"}
 
+
+def format_signal(signal: dict) -> str:
+    direction = signal["direction"]
+    symbol = signal["symbol"].replace("/USDT:USDT", "")
+    emoji = "🟢 LONG" if direction == "LONG" else "🔴 SHORT"
+    entry = float(signal["entry"])
+    sl = float(signal["sl"])
+    tp1 = float(signal["tp1"])
+    tp2 = float(signal["tp2"])
+    risk = abs(entry - sl)
+    reward = abs(tp1 - entry)
+    rr = round(reward / risk, 1) if risk > 0 else 0
+    atr = signal.get("atr", "N/A")
+    return (
+        f"⚡ <b>{emoji} | {symbol}</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"📍 Вхід:  <b>{entry:.6f}</b>\n"
+        f"🛡 SL:    <b>{sl:.6f}</b>\n"
+        f"🎯 TP1:  <b>{tp1:.6f}</b>\n"
+        f"🎯 TP2:  <b>{tp2:.6f}</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"📊 R:R = 1:{rr} | ATR={atr}\n"
+        f"🕐 {datetime.now().strftime('%H:%M %d.%m')}"
+    )
+
 # Зберігаємо стан для кожної пари (остання свічка, де знайдено сетап)
 last_setup_bars = {}
 last_order_times = {}
@@ -456,13 +481,15 @@ def run_bot():
                         setup = last_state.setup
                         direction_str = "LONG 🟢" if setup.dir == 1 else "SHORT 🔴"
                         
-                        msg = (
-                            f"🔔 <b>СИГНАЛ {direction_str}</b> | {symbol}\n"
-                            f"Вхід (Limit): <b>{setup.entry:.4f}</b>\n"
-                            f"Stop Loss: <b>{setup.sl:.4f}</b>\n"
-                            f"Take Profit 1: <b>{setup.tp1:.4f}</b>\n"
-                            f"Take Profit 2: <b>{setup.tp2:.4f}</b>"
-                        )
+                        msg = format_signal({
+                            "direction": "LONG" if setup.dir == 1 else "SHORT",
+                            "symbol": symbol,
+                            "entry": setup.entry,
+                            "sl": setup.sl,
+                            "tp1": setup.tp1,
+                            "tp2": setup.tp2,
+                            "atr": getattr(last_state, "atr", "N/A"),
+                        })
                         print(f"[{datetime.now()}] {msg.replace('<b>', '').replace('</b>', '')}")
                         
                         # Сповіщення в Telegram

@@ -143,6 +143,7 @@ def analyze_racer(df: pd.DataFrame, htf_df: pd.DataFrame, config: dict):
     adx_adaptive_window = config.get("adx_adaptive_window", 20)
     adx_adaptive_factor = config.get("adx_adaptive_factor", 0.7)
     vol_mult = config.get("vol_mult", config.get("vol_multiplier_min", 1.5))
+    vol_min = float(config.get("vol_min", config.get("vol_multiplier_min", vol_mult)))
     fib_level = config.get("fib_level", 0.618)
     fvg_min_size = config.get("fvg_min_size", 0.5)
     sl_atr_mult = config.get("sl_atr_mult", 1.5)
@@ -196,6 +197,9 @@ def analyze_racer(df: pd.DataFrame, htf_df: pd.DataFrame, config: dict):
         bar.bear_fvg = bear_fvg
         bar.is_impulse_bull = is_impulse_bull
         bar.is_impulse_bear = is_impulse_bear
+        if rel_vol < vol_min:
+            bars.append(bar)
+            continue
         
         # OTE Setup detection + SMC structure confluence
         smc = smc_states[i] if i < len(smc_states) else None
