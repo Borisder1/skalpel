@@ -96,6 +96,10 @@ class RacerBar:
     is_htf_bullish: bool
     is_htf_bearish: bool
     setup: Setup
+    bull_fvg: bool = False
+    bear_fvg: bool = False
+    is_impulse_bull: bool = False
+    is_impulse_bear: bool = False
 
 def analyze_racer(df: pd.DataFrame, htf_df: pd.DataFrame, config: dict):
     n = len(df)
@@ -185,6 +189,10 @@ def analyze_racer(df: pd.DataFrame, htf_df: pd.DataFrame, config: dict):
         body_size = abs(c[i] - o[i])
         is_impulse_bull = c[i] > o[i] and body_size > atr[i] * 0.6 and rel_vol > vol_mult
         is_impulse_bear = c[i] < o[i] and body_size > atr[i] * 0.6 and rel_vol > vol_mult
+        bar.bull_fvg = bull_fvg
+        bar.bear_fvg = bear_fvg
+        bar.is_impulse_bull = is_impulse_bull
+        bar.is_impulse_bear = is_impulse_bear
         
         # OTE Setup detection
         if bull_fvg and is_impulse_bull and not bar.is_sideways and bar.is_htf_bullish:

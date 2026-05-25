@@ -23,6 +23,7 @@ API_SECRET = os.getenv("BYBIT_API_SECRET")
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'active_config.json')
 TIMEFRAME = "15m"
 MIN_CANDLES_REQUIRED = 50
+DEBUG_PAIRS = {"BEAT/USDT:USDT", "BILL/USDT:USDT"}
 
 # Зберігаємо стан для кожної пари (остання свічка, де знайдено сетап)
 last_setup_bars = {}
@@ -434,6 +435,20 @@ def run_bot():
                             debug_logged = True
 
                 # 3. Перевіряємо сетап
+                if symbol in DEBUG_PAIRS:
+                    setup_found = bool(last_state.setup and last_state.setup.valid)
+                    print(f"[{datetime.now()}] --- DEBUG {symbol} ---")
+                    print(f"[{datetime.now()}]   BOS bull: N/A (racer_core не рахує BOS)")
+                    print(f"[{datetime.now()}]   BOS bear: N/A (racer_core не рахує BOS)")
+                    print(f"[{datetime.now()}]   CHoCH: N/A (racer_core не рахує CHoCH)")
+                    print(f"[{datetime.now()}]   OB active: N/A (racer_core не веде OB state)")
+                    print(f"[{datetime.now()}]   FVG naked bull/bear: {getattr(last_state, 'bull_fvg', False)}/{getattr(last_state, 'bear_fvg', False)}")
+                    print(f"[{datetime.now()}]   Confluence: N/A (в racer_core немає score)")
+                    print(f"[{datetime.now()}]   HTF trend bull/bear: {last_state.is_htf_bullish}/{last_state.is_htf_bearish}")
+                    print(f"[{datetime.now()}]   Session: N/A (в racer_core немає session фільтра)")
+                    print(f"[{datetime.now()}]   Impulse bull/bear: {getattr(last_state, 'is_impulse_bull', False)}/{getattr(last_state, 'is_impulse_bear', False)}")
+                    print(f"[{datetime.now()}]   Final decision (setup_found): {setup_found}")
+
                 if last_state.setup and last_state.setup.valid:
                     if last_setup_bars[symbol] != last_state.timestamp:
                         last_setup_bars[symbol] = last_state.timestamp
@@ -525,13 +540,8 @@ def run_bot():
                 print(f"[{datetime.now()}] 📈 ФІЛЬТРИ ПІДВИЩЕНО: {old} → {new} (стратегія знову працює)")
         if ladder_result["is_diagnostic"]:
             print(f"[{datetime.now()}] 🔬 DIAGNOSTIC MODE: ринок без чіткої структури. Збір даних без торгівлі.")
-            ai_diag = generate_ai_signal(exchange, cycle_symbols, TIMEFRAME)
-            if ai_diag:
-                print(f"[{datetime.now()}] 🤖 AI діагноз режиму: {ai_diag}")
-                conf = float(ai_diag.get('confidence', 0.0) or 0.0)
-                if ai_diag.get("direction") in {"LONG", "SHORT"} and conf >= 0.7:
-                    filter_manager.current_level = 2
-                    print(f"[{datetime.now()}] 🤖 AI: виявлено прихований тренд → повертаємось на RELAXED")
+            # TODO: Тимчасово вимкнено через нестабільність AI API (504/timeout/None).
+            pass
 
         print(
             f"[{datetime.now()}] 📊 Цикл завершено | scanned={cycle_scanned} setups={cycle_setups} "
