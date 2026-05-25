@@ -301,11 +301,27 @@ def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pc
         
         # Отримуємо специфікації монети та форматуємо ціну/кількість до точності біржі
         price_str = exchange.price_to_precision(symbol, entry)
+        market = exchange.market(symbol)
         qty_str = exchange.amount_to_precision(symbol, qty)
         
-        if float(qty_str) <= 0:
+        qty_val = float(qty_str)
+        if qty_val <= 0:
             # Захист від занадто малих позицій на дешевих монетах
             qty_str = exchange.amount_to_precision(symbol, qty * 10)
+            qty_val = float(qty_str)
+
+        # FIXED: лімітуємо кількість контрактів згідно біржових min/max, щоб не ловити retCode 10001.
+        amount_limits = (market.get("limits", {}) or {}).get("amount", {}) or {}
+        min_qty = amount_limits.get("min")
+        max_qty = amount_limits.get("max")
+        if max_qty is not None and qty_val > float(max_qty):
+            qty_val = float(max_qty)
+            qty_str = exchange.amount_to_precision(symbol, qty_val)
+        if min_qty is not None and qty_val < float(min_qty):
+            qty_val = float(min_qty)
+            qty_str = exchange.amount_to_precision(symbol, qty_val)
+        if float(qty_str) <= 0:
+            return None
             
         side = 'buy' if direction == "LONG" else 'sell'
         
@@ -379,6 +395,7 @@ def run_bot():
     require_confirmation = bool(startup_config.get("require_confirmation", False))
     confirmation_timeout_sec = int(startup_config.get("confirmation_timeout_sec", 120))
     pending_signals = {}
+    pending_keys = set()
     pending_lock = threading.Lock()
     exchange = init_bybit(startup_config)
     start_bal_info = safe_api_call(exchange.fetch_balance) or {}
@@ -493,14 +510,19 @@ def run_bot():
                             })
                     with pending_lock:
                         pending_signals.pop(sid, None)
+                        pending_keys.discard((symbol, direction))
                     continue
                 if pending.get("approved") is False:
+                    sig = pending.get("signal", {})
                     with pending_lock:
                         pending_signals.pop(sid, None)
+                        pending_keys.discard((sig.get("symbol"), sig.get("direction")))
                     continue
                 if (time.time() - pending.get("created_at", time.time())) > confirmation_timeout_sec:
+                    sig = pending.get("signal", {})
                     with pending_lock:
                         pending_signals.pop(sid, None)
+                        pending_keys.discard((sig.get("symbol"), sig.get("direction")))
                     send_telegram_message(f"⌛ Сигнал скасовано по таймауту: {pending['signal']['symbol']}")
                     continue
 
@@ -627,8 +649,12 @@ def run_bot():
                         # Сповіщення в Telegram
                         if require_confirmation and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
                             signal_id = f"{symbol}-{int(time.time())}"
+                            signal_key = (signal_payload["symbol"], signal_payload["direction"])
                             with pending_lock:
+                                if signal_key in pending_keys:
+                                    continue
                                 pending_signals[signal_id] = {"signal": signal_payload, "created_at": time.time(), "approved": None}
+                                pending_keys.add(signal_key)
                             send_signal_with_buttons(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, {**signal_payload, "id": signal_id})
                             continue
                         else:
