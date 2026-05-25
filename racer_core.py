@@ -89,10 +89,17 @@ class RacerBar:
     atr: float
     vol_ma: float
     adx: float
+    adx_threshold: float
+    rel_vol: float
+    fvg_size_atr: float
     is_sideways: bool
     is_htf_bullish: bool
     is_htf_bearish: bool
     setup: Setup
+    bull_fvg: bool = False
+    bear_fvg: bool = False
+    is_impulse_bull: bool = False
+    is_impulse_bear: bool = False
 
 def analyze_racer(df: pd.DataFrame, htf_df: pd.DataFrame, config: dict):
     n = len(df)
@@ -129,7 +136,10 @@ def analyze_racer(df: pd.DataFrame, htf_df: pd.DataFrame, config: dict):
     
     liq_lookback = config.get("liq_lookback", 20)
     adx_thresh = config.get("adx_thresh", 20)
-    vol_mult = config.get("vol_mult", 1.5)
+    adx_min = config.get("adx_min", 12)
+    adx_adaptive_window = config.get("adx_adaptive_window", 20)
+    adx_adaptive_factor = config.get("adx_adaptive_factor", 0.7)
+    vol_mult = config.get("vol_mult", config.get("vol_multiplier_min", 1.5))
     fib_level = config.get("fib_level", 0.618)
     fvg_min_size = config.get("fvg_min_size", 0.5)
     sl_atr_mult = config.get("sl_atr_mult", 1.5)
@@ -137,11 +147,18 @@ def analyze_racer(df: pd.DataFrame, htf_df: pd.DataFrame, config: dict):
     tp2_rr = config.get("tp2_rr", 3.0)
 
     for i in range(n):
-        is_side = adx[i] < adx_thresh if not np.isnan(adx[i]) else True
+        adx_lb = max(0, i - adx_adaptive_window + 1)
+        adx_slice = adx[adx_lb:i + 1]
+        _valid = adx_slice[~np.isnan(adx_slice)] if len(adx_slice) > 0 else np.array([])
+        adx_avg = float(np.mean(_valid)) if len(_valid) >= 3 else np.nan
+        adaptive_adx_thresh = max(float(adx_min), float(adx_avg) * float(adx_adaptive_factor)) if not np.isnan(adx_avg) else float(adx_min)
+        is_side = adx[i] < adaptive_adx_thresh if not np.isnan(adx[i]) else True
+        rel_vol = v[i] / max(vol_ma[i], 1e-10) if not np.isnan(vol_ma[i]) and vol_ma[i] > 0 else 0.0
         bar = RacerBar(
             i=i, timestamp=pd.Timestamp(ts[i]),
             o=o[i], h=h[i], l=l[i], c=c[i], v=v[i],
-            atr=atr[i], vol_ma=vol_ma[i], adx=adx[i],
+            atr=atr[i], vol_ma=vol_ma[i], adx=adx[i], adx_threshold=adaptive_adx_thresh,
+            rel_vol=rel_vol, fvg_size_atr=0.0,
             is_sideways=is_side,
             is_htf_bullish=htf_trend[i] == 1,
             is_htf_bearish=htf_trend[i] == -1,
@@ -170,8 +187,12 @@ def analyze_racer(df: pd.DataFrame, htf_df: pd.DataFrame, config: dict):
         bear_fvg = i >= 2 and h[i] < l[i-2]
         
         body_size = abs(c[i] - o[i])
-        is_impulse_bull = c[i] > o[i] and body_size > atr[i] * 0.6 and v[i] > vol_ma[i] * vol_mult
-        is_impulse_bear = c[i] < o[i] and body_size > atr[i] * 0.6 and v[i] > vol_ma[i] * vol_mult
+        is_impulse_bull = c[i] > o[i] and body_size > atr[i] * 0.6 and rel_vol > vol_mult
+        is_impulse_bear = c[i] < o[i] and body_size > atr[i] * 0.6 and rel_vol > vol_mult
+        bar.bull_fvg = bull_fvg
+        bar.bear_fvg = bear_fvg
+        bar.is_impulse_bull = is_impulse_bull
+        bar.is_impulse_bear = is_impulse_bear
         
         # OTE Setup detection
         if bull_fvg and is_impulse_bull and not bar.is_sideways and bar.is_htf_bullish:
@@ -182,7 +203,9 @@ def analyze_racer(df: pd.DataFrame, htf_df: pd.DataFrame, config: dict):
             fvg_top = l[i]
             fvg_bot = h[i-2]
             
-            if (fvg_top - fvg_bot) >= atr[i] * fvg_min_size:
+            bull_fvg_size_atr = (fvg_top - fvg_bot) / max(atr[i], 1e-10)
+            bar.fvg_size_atr = bull_fvg_size_atr
+            if bull_fvg_size_atr >= fvg_min_size:
                 fib_entry = swing_low + (swing_high - swing_low) * (1.0 - fib_level)
                 entry_price = min(fib_entry, fvg_top)
                 sl_price = min(swing_low, entry_price - atr[i] * sl_atr_mult)
@@ -200,7 +223,9 @@ def analyze_racer(df: pd.DataFrame, htf_df: pd.DataFrame, config: dict):
             fvg_top = l[i-2]
             fvg_bot = h[i]
             
-            if (fvg_top - fvg_bot) >= atr[i] * fvg_min_size:
+            bear_fvg_size_atr = (fvg_top - fvg_bot) / max(atr[i], 1e-10)
+            bar.fvg_size_atr = bear_fvg_size_atr
+            if bear_fvg_size_atr >= fvg_min_size:
                 fib_entry = swing_high - (swing_high - swing_low) * (1.0 - fib_level)
                 entry_price = max(fib_entry, fvg_bot)
                 sl_price = max(swing_high, entry_price + atr[i] * sl_atr_mult)
