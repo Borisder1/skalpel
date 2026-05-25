@@ -455,8 +455,10 @@ def run_bot():
                     timeout=10,
                 )
                 last_daily_report_day = now_utc.date()
-        if require_confirmation and TELEGRAM_BOT_TOKEN:
-            # Обробка підтверджених/протермінованих сигналів з попередніх циклів
+        def process_pending_confirmations():
+            """Швидка обробка pending сигналів без очікування завершення всього циклу сканування."""
+            if not (require_confirmation and TELEGRAM_BOT_TOKEN):
+                return
             with pending_lock:
                 snapshot_pending = list(pending_signals.items())
             for sid, pending in snapshot_pending:
@@ -480,11 +482,12 @@ def run_bot():
                             risk_pct=CONFIG["risk_pct"],
                         )
                         if order and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+                            qty_for_tg = order.get("amount") or order.get("qty") or sig.get("qty") or "N/A"
                             send_position_opened(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, {
                                 "symbol": symbol,
                                 "side": "Buy" if direction == "LONG" else "Sell",
                                 "entry_price": sig["entry"],
-                                "qty": order.get("amount", "N/A"),
+                                "qty": qty_for_tg,
                                 "sl": sig["sl"],
                                 "tp": sig["tp2"],
                             })
@@ -500,6 +503,8 @@ def run_bot():
                         pending_signals.pop(sid, None)
                     send_telegram_message(f"⌛ Сигнал скасовано по таймауту: {pending['signal']['symbol']}")
                     continue
+
+        process_pending_confirmations()
         cycle_scanned = 0
         cycle_setups = 0
         cycle_invalid_symbols = 0
@@ -533,6 +538,8 @@ def run_bot():
         cycle_symbols = select_symbols_for_scan(exchange, symbol_window, CONFIG, cycle_index)
 
         for symbol in cycle_symbols:
+            # Критично для швидкості: не чекаємо кінця циклу, обробляємо підтвердження одразу між парами.
+            process_pending_confirmations()
             try:
                 # 1. Завантажуємо 15m і 4h (HTF) дані
                 df = fetch_data(exchange, symbol, TIMEFRAME, limit=100)
