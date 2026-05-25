@@ -10,7 +10,15 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 from racer_core import analyze_racer
-from telegram_notifier import send_telegram_message, send_signal, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from telegram_notifier import (
+    send_telegram_message,
+    send_signal,
+    send_signal_with_buttons,
+    poll_telegram_callbacks,
+    send_position_opened,
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHAT_ID,
+)
 from db_logger import init_db, log_trade, update_trade_status
 from ai_signal_agent import generate_ai_signal
 from adaptive_filters import AdaptiveFilterManager
@@ -65,8 +73,8 @@ def format_signal(signal: dict) -> str:
 last_setup_bars = {}
 last_order_times = {}
 # FIXED: глобальні обмеження ризику депозиту.
-MAX_DAILY_LOSS_PCT = 3.0
-MAX_SESSION_DRAWDOWN_PCT = 8.0
+MAX_DAILY_LOSS_PCT = 25.0
+MAX_SESSION_DRAWDOWN_PCT = 20.0
 MIN_ORDER_INTERVAL_SEC = 1.2
 
 def safe_api_call(fn, *args, retries=3, base_sleep=1.0, **kwargs):
@@ -363,6 +371,11 @@ def run_bot():
     init_db()
     
     startup_config = load_dynamic_config()
+    max_daily_loss_pct = float(startup_config.get("max_daily_loss_pct", MAX_DAILY_LOSS_PCT))
+    max_session_drawdown_pct = float(startup_config.get("max_session_drawdown_pct", MAX_SESSION_DRAWDOWN_PCT))
+    require_confirmation = bool(startup_config.get("require_confirmation", False))
+    confirmation_timeout_sec = int(startup_config.get("confirmation_timeout_sec", 120))
+    pending_signals = {}
     exchange = init_bybit(startup_config)
     
     # Завантажуємо повний список доступних символів один раз
@@ -407,10 +420,12 @@ def run_bot():
             day_start_equity = free_now
         session_dd = ((session_start_equity - free_now) / max(session_start_equity, 1.0)) * 100.0
         daily_dd = ((day_start_equity - free_now) / max(day_start_equity, 1.0)) * 100.0
-        if session_dd >= MAX_SESSION_DRAWDOWN_PCT or daily_dd >= MAX_DAILY_LOSS_PCT:
+        if session_dd >= max_session_drawdown_pct or daily_dd >= max_daily_loss_pct:
             print(f"[{datetime.now()}] 🛑 Risk guard stop: session_dd={session_dd:.2f}% daily_dd={daily_dd:.2f}%")
             time.sleep(60)
             continue
+        if require_confirmation and TELEGRAM_BOT_TOKEN:
+            poll_telegram_callbacks(TELEGRAM_BOT_TOKEN, pending_signals)
         cycle_scanned = 0
         cycle_setups = 0
         cycle_invalid_symbols = 0
@@ -519,8 +534,7 @@ def run_bot():
                         })
                         print(f"[{datetime.now()}] {msg.replace('<b>', '').replace('</b>', '')}")
                         
-                        # Сповіщення в Telegram
-                        send_signal(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, {
+                        signal_payload = {
                             "direction": "LONG" if setup.dir == 1 else "SHORT",
                             "symbol": symbol,
                             "entry": setup.entry,
@@ -528,7 +542,14 @@ def run_bot():
                             "tp1": setup.tp1,
                             "tp2": setup.tp2,
                             "atr": getattr(last_state, "atr", 0),
-                        })
+                        }
+                        # Сповіщення в Telegram
+                        if require_confirmation and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+                            signal_id = f"{symbol}-{int(time.time())}"
+                            pending_signals[signal_id] = {"signal": signal_payload, "created_at": time.time(), "approved": None}
+                            send_signal_with_buttons(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, {**signal_payload, "id": signal_id})
+                        else:
+                            send_signal(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, signal_payload)
                         
                         # Логування в SQLite
                         log_trade(
@@ -551,10 +572,22 @@ def run_bot():
                         if not can_open_position(direction, open_pos):
                             send_telegram_message(f"⛔ {symbol}: позиція вже відкрита в цьому напрямку")
                             continue
+                        if require_confirmation:
+                            approved = False
+                            for sid, p in list(pending_signals.items()):
+                                if p["signal"]["symbol"] == symbol and p["signal"]["direction"] == direction:
+                                    if p.get("approved") is True:
+                                        approved = True
+                                        pending_signals.pop(sid, None)
+                                    elif (time.time() - p["created_at"]) > confirmation_timeout_sec:
+                                        pending_signals.pop(sid, None)
+                                    break
+                            if not approved:
+                                continue
                         if CONFIG.get("dry_run", True):
                             print(f"[{datetime.now()}] 🧪 dry_run=true, ордер НЕ відправлено для {symbol}")
                         else:
-                            execute_demo_order(
+                            order = execute_demo_order(
                                 exchange=exchange,
                                 symbol=symbol,
                                 direction=direction,
@@ -564,6 +597,15 @@ def run_bot():
                                 tp2=setup.tp2,
                                 risk_pct=CONFIG["risk_pct"]
                             )
+                            if order and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+                                send_position_opened(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, {
+                                    "symbol": symbol,
+                                    "side": "Buy" if direction == "LONG" else "Sell",
+                                    "entry_price": setup.entry,
+                                    "qty": order.get("amount", "N/A"),
+                                    "sl": setup.sl,
+                                    "tp": setup.tp2,
+                                })
                 
                 # Запобігання Rate Limit (динамічно від біржі)
                 time.sleep(max(exchange.rateLimit / 1000.0, 0.35))
