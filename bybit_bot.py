@@ -446,6 +446,43 @@ def run_bot():
                 last_daily_report_day = now_utc.date()
         if require_confirmation and TELEGRAM_BOT_TOKEN:
             poll_telegram_callbacks(TELEGRAM_BOT_TOKEN, pending_signals)
+            # Обробка підтверджених/протермінованих сигналів з попередніх циклів
+            for sid, pending in list(pending_signals.items()):
+                if pending.get("approved") is False:
+                    pending_signals.pop(sid, None)
+                    continue
+                if (time.time() - pending.get("created_at", time.time())) > confirmation_timeout_sec:
+                    pending_signals.pop(sid, None)
+                    send_telegram_message(f"⌛ Сигнал скасовано по таймауту: {pending['signal']['symbol']}")
+                    continue
+                if pending.get("approved") is True:
+                    sig = pending["signal"]
+                    direction = sig["direction"]
+                    symbol = sig["symbol"]
+                    positions = get_open_positions(exchange)
+                    long_count = sum(1 for p in positions if str(p.get("side") or p.get("info", {}).get("side", "")).lower() in {"buy", "long"})
+                    short_count = sum(1 for p in positions if str(p.get("side") or p.get("info", {}).get("side", "")).lower() in {"sell", "short"})
+                    if can_open_position(direction, {"long_count": long_count, "short_count": short_count}):
+                        order = execute_demo_order(
+                            exchange=exchange,
+                            symbol=symbol,
+                            direction=direction,
+                            entry=sig["entry"],
+                            sl=sig["sl"],
+                            tp1=sig["tp1"],
+                            tp2=sig["tp2"],
+                            risk_pct=CONFIG["risk_pct"],
+                        )
+                        if order and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+                            send_position_opened(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, {
+                                "symbol": symbol,
+                                "side": "Buy" if direction == "LONG" else "Sell",
+                                "entry_price": sig["entry"],
+                                "qty": order.get("amount", "N/A"),
+                                "sl": sig["sl"],
+                                "tp": sig["tp2"],
+                            })
+                    pending_signals.pop(sid, None)
         cycle_scanned = 0
         cycle_setups = 0
         cycle_invalid_symbols = 0
@@ -568,6 +605,7 @@ def run_bot():
                             signal_id = f"{symbol}-{int(time.time())}"
                             pending_signals[signal_id] = {"signal": signal_payload, "created_at": time.time(), "approved": None}
                             send_signal_with_buttons(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, {**signal_payload, "id": signal_id})
+                            continue
                         else:
                             send_signal(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, signal_payload)
                         
@@ -592,18 +630,6 @@ def run_bot():
                         if not can_open_position(direction, open_pos):
                             send_telegram_message(f"⛔ {symbol}: позиція вже відкрита в цьому напрямку")
                             continue
-                        if require_confirmation:
-                            approved = False
-                            for sid, p in list(pending_signals.items()):
-                                if p["signal"]["symbol"] == symbol and p["signal"]["direction"] == direction:
-                                    if p.get("approved") is True:
-                                        approved = True
-                                        pending_signals.pop(sid, None)
-                                    elif (time.time() - p["created_at"]) > confirmation_timeout_sec:
-                                        pending_signals.pop(sid, None)
-                                    break
-                            if not approved:
-                                continue
                         if CONFIG.get("dry_run", True):
                             print(f"[{datetime.now()}] 🧪 dry_run=true, ордер НЕ відправлено для {symbol}")
                         else:

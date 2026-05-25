@@ -130,11 +130,15 @@ def answer_callback(token, callback_id, text):
 
 def poll_telegram_callbacks(token, pending_signals):
     global _LAST_UPDATE_ID
-    resp = requests.get(
-        f"https://api.telegram.org/bot{token}/getUpdates",
-        params={"offset": _LAST_UPDATE_ID, "timeout": 1},
-        timeout=10,
-    ).json()
+    try:
+        resp = requests.get(
+            f"https://api.telegram.org/bot{token}/getUpdates",
+            params={"offset": _LAST_UPDATE_ID, "timeout": 1},
+            timeout=10,
+        ).json()
+    except Exception as e:
+        logger.warning(f"TG callbacks poll error: {e}")
+        return
     for update in resp.get("result", []):
         _LAST_UPDATE_ID = update["update_id"] + 1
         callback = update.get("callback_query")
@@ -161,7 +165,7 @@ def send_telegram_message(message: str):
     try:
         response = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"},
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": message},
             timeout=10
         )
         if response.status_code != 200:
