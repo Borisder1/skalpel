@@ -3,7 +3,7 @@
     "base_url": "https://api-demo.bybit.com",
     "api_key": "",
     "api_secret": "",
-    "dry_run": true,
+    "dry_run": false,
     "fib_level": 0.5,
     "sl_atr_mult": 1.5,
     "tp1_rr": 1.5,

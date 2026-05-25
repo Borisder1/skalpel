@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 from racer_core import analyze_racer
-from telegram_notifier import send_telegram_message
+from telegram_notifier import send_telegram_message, send_signal, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 from db_logger import init_db, log_trade, update_trade_status
 from ai_signal_agent import generate_ai_signal
 from adaptive_filters import AdaptiveFilterManager
@@ -311,6 +311,7 @@ def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pc
         except Exception:
             pass # Плече вже встановлене
             
+        print(f"[{datetime.now()}] 📤 Відправляємо ордер на DEMO: {symbol} {direction}")
         print(f"[{datetime.now()}] 🛒 ДЕМО-ОРДЕР: {side.upper()} {qty_str} {symbol} по {price_str} (SL: {sl:.4f}, TP: {tp2:.4f})")
         
         now_ts = time.time()
@@ -341,6 +342,21 @@ def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pc
         print(f"⚠️ Помилка виставлення демо-ордера на {symbol}: {e}")
         send_telegram_message(f"❌ <b>Помилка ордера {symbol}:</b> {e}")
         return None
+
+
+def get_open_positions(exchange):
+    positions = safe_api_call(exchange.fetch_positions) or []
+    return [p for p in positions if float(p.get("contracts") or p.get("positionAmt") or p.get("info", {}).get("size") or 0) != 0]
+
+
+def can_open_position(direction: str, open_positions: dict) -> bool:
+    if direction == "LONG" and open_positions.get("long_count", 0) >= 1:
+        print(f"[{datetime.now()}] ⛔ LONG вже відкрито — пропускаємо")
+        return False
+    if direction == "SHORT" and open_positions.get("short_count", 0) >= 1:
+        print(f"[{datetime.now()}] ⛔ SHORT вже відкрито — пропускаємо")
+        return False
+    return True
 
 def run_bot():
     # Ініціалізуємо БД
@@ -504,7 +520,15 @@ def run_bot():
                         print(f"[{datetime.now()}] {msg.replace('<b>', '').replace('</b>', '')}")
                         
                         # Сповіщення в Telegram
-                        send_telegram_message(msg)
+                        send_signal(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, {
+                            "direction": "LONG" if setup.dir == 1 else "SHORT",
+                            "symbol": symbol,
+                            "entry": setup.entry,
+                            "sl": setup.sl,
+                            "tp1": setup.tp1,
+                            "tp2": setup.tp2,
+                            "atr": getattr(last_state, "atr", 0),
+                        })
                         
                         # Логування в SQLite
                         log_trade(
@@ -519,13 +543,21 @@ def run_bot():
                         )
                         
                         # Вхід на Демо рахунку Bybit
+                        direction = "LONG" if setup.dir == 1 else "SHORT"
+                        positions = get_open_positions(exchange)
+                        long_count = sum(1 for p in positions if str(p.get("side") or p.get("info", {}).get("side", "")).lower() in {"buy", "long"})
+                        short_count = sum(1 for p in positions if str(p.get("side") or p.get("info", {}).get("side", "")).lower() in {"sell", "short"})
+                        open_pos = {"long_count": long_count, "short_count": short_count}
+                        if not can_open_position(direction, open_pos):
+                            send_telegram_message(f"⛔ {symbol}: позиція вже відкрита в цьому напрямку")
+                            continue
                         if CONFIG.get("dry_run", True):
                             print(f"[{datetime.now()}] 🧪 dry_run=true, ордер НЕ відправлено для {symbol}")
                         else:
                             execute_demo_order(
                                 exchange=exchange,
                                 symbol=symbol,
-                                direction="LONG" if setup.dir == 1 else "SHORT",
+                                direction=direction,
                                 entry=setup.entry,
                                 sl=setup.sl,
                                 tp1=setup.tp1,
