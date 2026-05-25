@@ -2,10 +2,10 @@ class AdaptiveFilterManager:
     """Розумний менеджер фільтрів з авто-фолбеком."""
 
     LADDER = [
-        {"level": 1, "adx": 15, "vol": 1.0, "fvg": 0.08, "label": "STRICT"},
-        {"level": 2, "adx": 12, "vol": 0.9, "fvg": 0.06, "label": "NORMAL"},
-        {"level": 3, "adx": 10, "vol": 0.8, "fvg": 0.05, "label": "RELAXED"},
-        {"level": 4, "adx": 8, "vol": 0.7, "fvg": 0.04, "label": "MINIMAL"},
+        {"level": 1, "adx": 15, "vol": 0.7, "fvg": 0.08, "label": "STRICT"},
+        {"level": 2, "adx": 12, "vol": 0.6, "fvg": 0.06, "label": "NORMAL"},
+        {"level": 3, "adx": 10, "vol": 0.5, "fvg": 0.05, "label": "RELAXED"},
+        {"level": 4, "adx": 8, "vol": 0.4, "fvg": 0.04, "label": "MINIMAL"},
         {"level": 5, "adx": 0, "vol": 0.0, "fvg": 0.00, "label": "DIAGNOSTIC"},
     ]
 

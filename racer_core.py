@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass
+from smc_core import analyze as analyze_smc
 
 def calc_atr(df: pd.DataFrame, period: int = 14) -> np.ndarray:
     high, low, close = df["high"].values, df["low"].values, df["close"].values
@@ -100,6 +101,12 @@ class RacerBar:
     bear_fvg: bool = False
     is_impulse_bull: bool = False
     is_impulse_bear: bool = False
+    bos_bull: bool = False
+    bos_bear: bool = False
+    choch_bull: bool = False
+    choch_bear: bool = False
+    ob_active: bool = False
+    session: str = "Off"
 
 def analyze_racer(df: pd.DataFrame, htf_df: pd.DataFrame, config: dict):
     n = len(df)
@@ -110,20 +117,16 @@ def analyze_racer(df: pd.DataFrame, htf_df: pd.DataFrame, config: dict):
     vol_ma = calc_sma(v, 20)
     _, _, adx = calc_dmi(df, config.get("adx_len", 14))
     
-    htf_c = htf_df["close"].values
-    htf_ema_fast = calc_ema(htf_c, config.get("ema_fast", 50))
-    htf_ema_slow = calc_ema(htf_c, config.get("ema_slow", 200))
-    
-    htf_trend = np.zeros(n)
-    htf_ts = htf_df["timestamp"].values
-    htf_idx = 0
-    for i in range(n):
-        while htf_idx + 1 < len(htf_ts) and htf_ts[htf_idx + 1] <= ts[i]:
-            htf_idx += 1
-        fast = htf_ema_fast[htf_idx]
-        slow = htf_ema_slow[htf_idx]
-        if not np.isnan(fast) and not np.isnan(slow):
-            htf_trend[i] = 1 if fast > slow else -1 if fast < slow else 0
+    # Підключаємо структурні сигнали з smc_core (BOS/CHoCH/OB/FVG/HTF trend/session)
+    smc_states = analyze_smc(
+        df,
+        htf_df,
+        swing_len=2,
+        liquidity_lookback=int(config.get("liq_lookback", 20)),
+        atr_len=14,
+        rel_vol_threshold=float(config.get("vol_multiplier_min", config.get("vol_mult", 1.0))),
+        min_adr_pct=0.0,
+    )
             
     bars = []
     
@@ -160,8 +163,8 @@ def analyze_racer(df: pd.DataFrame, htf_df: pd.DataFrame, config: dict):
             atr=atr[i], vol_ma=vol_ma[i], adx=adx[i], adx_threshold=adaptive_adx_thresh,
             rel_vol=rel_vol, fvg_size_atr=0.0,
             is_sideways=is_side,
-            is_htf_bullish=htf_trend[i] == 1,
-            is_htf_bearish=htf_trend[i] == -1,
+            is_htf_bullish=smc_states[i].htf_trend == 1 if i < len(smc_states) else False,
+            is_htf_bearish=smc_states[i].htf_trend == -1 if i < len(smc_states) else False,
             setup=Setup()
         )
         
@@ -194,8 +197,25 @@ def analyze_racer(df: pd.DataFrame, htf_df: pd.DataFrame, config: dict):
         bar.is_impulse_bull = is_impulse_bull
         bar.is_impulse_bear = is_impulse_bear
         
-        # OTE Setup detection
-        if bull_fvg and is_impulse_bull and not bar.is_sideways and bar.is_htf_bullish:
+        # OTE Setup detection + SMC structure confluence
+        smc = smc_states[i] if i < len(smc_states) else None
+        bos_bull = bool(smc and smc.structure.bos_bull)
+        bos_bear = bool(smc and smc.structure.bos_bear)
+        choch_bull = bool(smc and smc.structure.choch_bull)
+        choch_bear = bool(smc and smc.structure.choch_bear)
+        ob_bull = bool(smc and smc.ob.valid and smc.ob.bullish)
+        ob_bear = bool(smc and smc.ob.valid and (not smc.ob.bullish))
+        fvg_bull_naked = bool(smc and smc.bull_fvg)
+        fvg_bear_naked = bool(smc and smc.bear_fvg)
+        bar.bos_bull = bos_bull
+        bar.bos_bear = bos_bear
+        bar.choch_bull = choch_bull
+        bar.choch_bear = choch_bear
+        bar.ob_active = bool((ob_bull or ob_bear))
+        bar.session = smc.session if smc else "Off"
+
+        if (bull_fvg and is_impulse_bull and not bar.is_sideways and bar.is_htf_bullish
+                and (bos_bull or choch_bull) and (fvg_bull_naked or ob_bull)):
             swing_low = np.min(l[max(0, i-5):i+1])
             if not np.isnan(last_sweep_low) and (i - last_sweep_low_bar) < 10:
                 swing_low = last_sweep_low
@@ -215,7 +235,8 @@ def analyze_racer(df: pd.DataFrame, htf_df: pd.DataFrame, config: dict):
                 
                 current_setup = Setup(True, 1, entry_price, sl_price, tp1_price, tp2_price, i)
                 
-        elif bear_fvg and is_impulse_bear and not bar.is_sideways and bar.is_htf_bearish:
+        elif (bear_fvg and is_impulse_bear and not bar.is_sideways and bar.is_htf_bearish
+              and (bos_bear or choch_bear) and (fvg_bear_naked or ob_bear)):
             swing_high = np.max(h[max(0, i-5):i+1])
             if not np.isnan(last_sweep_high) and (i - last_sweep_high_bar) < 10:
                 swing_high = last_sweep_high

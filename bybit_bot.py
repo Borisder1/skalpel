@@ -438,15 +438,14 @@ def run_bot():
                 if symbol in DEBUG_PAIRS:
                     setup_found = bool(last_state.setup and last_state.setup.valid)
                     print(f"[{datetime.now()}] --- DEBUG {symbol} ---")
-                    print(f"[{datetime.now()}]   BOS bull: N/A (racer_core не рахує BOS)")
-                    print(f"[{datetime.now()}]   BOS bear: N/A (racer_core не рахує BOS)")
-                    print(f"[{datetime.now()}]   CHoCH: N/A (racer_core не рахує CHoCH)")
-                    print(f"[{datetime.now()}]   OB active: N/A (racer_core не веде OB state)")
-                    print(f"[{datetime.now()}]   FVG naked bull/bear: {getattr(last_state, 'bull_fvg', False)}/{getattr(last_state, 'bear_fvg', False)}")
-                    print(f"[{datetime.now()}]   Confluence: N/A (в racer_core немає score)")
-                    print(f"[{datetime.now()}]   HTF trend bull/bear: {last_state.is_htf_bullish}/{last_state.is_htf_bearish}")
-                    print(f"[{datetime.now()}]   Session: N/A (в racer_core немає session фільтра)")
+                    print(f"[{datetime.now()}]   BOS bull: {getattr(last_state, 'bos_bull', False)} | BOS bear: {getattr(last_state, 'bos_bear', False)}")
+                    print(f"[{datetime.now()}]   CHoCH bull/bear: {getattr(last_state, 'choch_bull', False)}/{getattr(last_state, 'choch_bear', False)}")
+                    print(f"[{datetime.now()}]   OB active: {getattr(last_state, 'ob_active', False)}")
+                    print(f"[{datetime.now()}]   FVG bull naked: {getattr(last_state, 'bull_fvg', False)} | FVG bear naked: {getattr(last_state, 'bear_fvg', False)}")
+                    print(f"[{datetime.now()}]   HTF trend: {'bull' if last_state.is_htf_bullish else 'bear' if last_state.is_htf_bearish else 'flat'}")
+                    print(f"[{datetime.now()}]   Session: {getattr(last_state, 'session', 'Off')}")
                     print(f"[{datetime.now()}]   Impulse bull/bear: {getattr(last_state, 'is_impulse_bull', False)}/{getattr(last_state, 'is_impulse_bear', False)}")
+                    print(f"[{datetime.now()}]   ATR: {getattr(last_state, 'atr', float('nan')):.4f}")
                     print(f"[{datetime.now()}]   Final decision (setup_found): {setup_found}")
 
                 if last_state.setup and last_state.setup.valid:
