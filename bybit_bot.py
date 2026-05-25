@@ -25,6 +25,7 @@ from db_logger import init_db, log_trade, update_trade_status
 from ai_signal_agent import generate_ai_signal
 from adaptive_filters import AdaptiveFilterManager
 from pnl_tracker import record_trade, get_summary
+from ops_dashboard import record_cycle, record_event, build_24h_report
 
 load_dotenv()
 
@@ -375,6 +376,23 @@ def get_open_positions(exchange):
     positions = safe_api_call(exchange.fetch_positions) or []
     return [p for p in positions if float(p.get("contracts") or p.get("positionAmt") or p.get("info", {}).get("size") or 0) != 0]
 
+def get_open_orders(exchange, symbol=None):
+    """Повертає відкриті ордери (опційно по символу)."""
+    try:
+        if symbol:
+            return safe_api_call(exchange.fetch_open_orders, symbol=symbol) or []
+        return safe_api_call(exchange.fetch_open_orders) or []
+    except Exception:
+        return []
+
+def has_same_direction_open_order(orders, direction: str) -> bool:
+    side_target = "buy" if direction == "LONG" else "sell"
+    for o in orders:
+        side = str(o.get("side") or o.get("info", {}).get("side", "")).lower()
+        if side == side_target:
+            return True
+    return False
+
 
 def can_open_position(direction: str, open_positions: dict) -> bool:
     if direction == "LONG" and open_positions.get("long_count", 0) >= 1:
@@ -483,6 +501,15 @@ def run_bot():
                     sig = pending["signal"]
                     direction = sig["direction"]
                     symbol = sig["symbol"]
+                    symbol_open_orders = get_open_orders(exchange, symbol)
+                    if has_same_direction_open_order(symbol_open_orders, direction):
+                        send_telegram_message(
+                            f"ℹ️ <b>{symbol}</b>: вже є відкритий <b>{direction}</b> ордер на біржі — новий не створюю."
+                        )
+                        with pending_lock:
+                            pending_signals.pop(sid, None)
+                            pending_keys.discard((symbol, direction))
+                        continue
                     positions = get_open_positions(exchange)
                     long_count = sum(1 for p in positions if str(p.get("side") or p.get("info", {}).get("side", "")).lower() in {"buy", "long"})
                     short_count = sum(1 for p in positions if str(p.get("side") or p.get("info", {}).get("side", "")).lower() in {"sell", "short"})
@@ -508,12 +535,16 @@ def run_bot():
                                 "sl": sig["sl"],
                                 "tp": sig["tp2"],
                             })
+                            record_event("order_opened", {"symbol": symbol, "direction": direction, "source": "confirmed"})
+                        elif order is None:
+                            record_event("order_rejected", {"symbol": symbol, "direction": direction, "source": "confirmed"})
                     with pending_lock:
                         pending_signals.pop(sid, None)
                         pending_keys.discard((symbol, direction))
                     continue
                 if pending.get("approved") is False:
                     sig = pending.get("signal", {})
+                    record_event("skip", {"symbol": sig.get("symbol"), "direction": sig.get("direction")})
                     with pending_lock:
                         pending_signals.pop(sid, None)
                         pending_keys.discard((sig.get("symbol"), sig.get("direction")))
@@ -650,11 +681,20 @@ def run_bot():
                         if require_confirmation and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
                             signal_id = f"{symbol}-{int(time.time())}"
                             signal_key = (signal_payload["symbol"], signal_payload["direction"])
+                            symbol_open_orders = get_open_orders(exchange, symbol)
+                            if has_same_direction_open_order(symbol_open_orders, signal_payload["direction"]):
+                                record_event("order_already_exists", {"symbol": symbol, "direction": signal_payload["direction"], "phase": "enqueue"})
+                                send_telegram_message(
+                                    f"ℹ️ <b>{symbol}</b>: на біржі вже стоїть ордер у напрямку "
+                                    f"<b>{signal_payload['direction']}</b> — повторний сигнал пропущено."
+                                )
+                                continue
                             with pending_lock:
                                 if signal_key in pending_keys:
                                     continue
                                 pending_signals[signal_id] = {"signal": signal_payload, "created_at": time.time(), "approved": None}
                                 pending_keys.add(signal_key)
+                            record_event("confirm", {"symbol": symbol, "direction": signal_payload["direction"], "phase": "request"})
                             send_signal_with_buttons(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, {**signal_payload, "id": signal_id})
                             continue
                         else:
@@ -703,6 +743,9 @@ def run_bot():
                                     "sl": setup.sl,
                                     "tp": setup.tp2,
                                 })
+                                record_event("order_opened", {"symbol": symbol, "direction": direction, "source": "auto"})
+                            elif order is None:
+                                record_event("order_rejected", {"symbol": symbol, "direction": direction, "source": "auto"})
                 
                 # Запобігання Rate Limit (динамічно від біржі)
                 time.sleep(max(exchange.rateLimit / 1000.0, 0.35))
@@ -763,6 +806,18 @@ def run_bot():
             f"FVG fail={fvg_fail}/{len(cycle_symbols)} | "
             f"Пройшли всі={passed_all}/{len(cycle_symbols)}"
         )
+        record_cycle({
+            "scanned": cycle_scanned,
+            "setups": cycle_setups,
+            "invalid": cycle_invalid_symbols,
+            "ratelimit": cycle_rate_limits,
+            "dry_cycles": dry_cycles_without_setups,
+            "adx_fail": adx_fail,
+            "vol_fail": vol_fail,
+            "fvg_fail": fvg_fail,
+            "passed_all": passed_all,
+            "filter_level": filter_manager.get_status(),
+        })
         # Heartbeat diagnostics source: остання пара з найменшим запасом до ADX порогу
         diag_pair = None
         diag_margin = 1e9
@@ -795,8 +850,8 @@ def run_bot():
                 fvg_line = f"FVG: {diag_block['fvg']:.2f} {'<' if diag_block['fvg'] < diag_block['fvg_t'] else '>='} поріг {diag_block['fvg_t']:.2f}"
             else:
                 adx_line = vol_line = fvg_line = "n/a"
-            send_telegram_message(
-                f"🩺 <b>Heartbeat SMC Racer</b>\n"
+                send_telegram_message(
+                    f"🩺 <b>Heartbeat SMC Racer</b>\n"
                 f"Скановано пар: <b>{cycle_scanned}</b>\n"
                 f"Сетапів за цикл: <b>{cycle_setups}</b>\n"
                 f"RateLimit помилок: <b>{cycle_rate_limits}</b>\n"
@@ -807,8 +862,9 @@ def run_bot():
                 f"Пар відфільтровано (ADX < поріг): <b>{pairs_filtered_by_adx}</b>\n"
                 f"Фільтри зараз → ADX: <b>{CONFIG.get('adx_thresh')}</b>, VOL: <b>{CONFIG.get('vol_multiplier_min', CONFIG.get('vol_mult'))}</b>, FVG: <b>{CONFIG.get('fvg_min_size')}</b>\n"
                 f"Остання пара з найближчим сетапом: <b>{diag_pair or 'n/a'}</b>\n"
-                f"├── {adx_line}\n├── {vol_line}\n└── {fvg_line}"
-            )
+                    f"├── {adx_line}\n├── {vol_line}\n└── {fvg_line}"
+                )
+                print(f"[{datetime.now()}] {build_24h_report().replace('<b>', '').replace('</b>', '')}")
             last_health_ping = time.time()
 
         if cycle_setups == 0 and dry_cycles_without_setups >= 4 and (time.time() - last_ai_signal_ping > 1800):
