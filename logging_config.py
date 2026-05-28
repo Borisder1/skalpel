@@ -53,7 +53,9 @@ def setup_file_logging(app_name: str = "bot") -> str:
             if end and end != "\n":
                 message = f"{message}{end}"
             level = logging.ERROR if file is sys.stderr else logging.INFO
-            logging.getLogger("print").log(level, message)
+            print_logger = logging.getLogger("print")
+            for line in str(message).splitlines() or [""]:
+                print_logger.log(level, line)
             for handler in logging.getLogger().handlers:
                 if flush:
                     handler.flush()
