@@ -26,6 +26,9 @@ from ai_signal_agent import generate_ai_signal
 from adaptive_filters import AdaptiveFilterManager
 from pnl_tracker import record_trade, get_summary
 from ops_dashboard import record_cycle, record_event, build_24h_report
+from logging_config import setup_file_logging
+
+LOG_FILE = setup_file_logging("bot")
 
 load_dotenv()
 
