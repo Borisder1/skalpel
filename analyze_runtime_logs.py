@@ -10,7 +10,6 @@ import re
 import sqlite3
 from collections import Counter
 from datetime import datetime
-from pathlib import Path
 from urllib.parse import unquote
 
 
@@ -26,6 +25,7 @@ SIGNAL_RE = re.compile(r"⚡\s+(?P<side>🟢 LONG|🔴 SHORT) \| (?P<symbol>[^\s
 ORDER_RE = re.compile(r"ОРДЕР ВИСТАВЛЕНО НА DEMO|ДЕМО-ОРДЕР")
 ERR_RE = re.compile(r"Помилка|ERROR|Traceback|retCode|Risk guard stop|Rate limit", re.IGNORECASE)
 SKIP_CANDLES_RE = re.compile(r"Пропускаємо (?P<symbol>\S+) (?P<tf>\S+): мало свічок \((?P<count>\d+)\)")
+TS_RE = re.compile(r"(?P<ts>20\d{2}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 
 
 def decode_line(line: str) -> str:
@@ -53,11 +53,19 @@ def summarize_logs(paths: list[str]) -> dict:
     orders = 0
     first_ts = None
     last_ts = None
+    min_ts = None
+    max_ts = None
+    line_count = 0
 
     for path, line in iter_lines(paths):
-        if first_ts is None:
-            first_ts = line[:19]
-        last_ts = line[:19]
+        line_count += 1
+        if m_ts := TS_RE.search(line):
+            ts = m_ts.group("ts")
+            if first_ts is None:
+                first_ts = ts
+            last_ts = ts
+            min_ts = ts if min_ts is None else min(min_ts, ts)
+            max_ts = ts if max_ts is None else max(max_ts, ts)
 
         if m := CYCLE_RE.search(line):
             cycles.append({k: int(v) for k, v in m.groupdict().items()})
@@ -74,14 +82,15 @@ def summarize_logs(paths: list[str]) -> dict:
 
     return {
         "files": paths,
-        "first_ts": first_ts,
-        "last_ts": last_ts,
+        "first_ts": min_ts or first_ts,
+        "last_ts": max_ts or last_ts,
         "cycles": cycles,
         "filters": filters,
         "signals": signals,
         "orders": orders,
         "errors": errors[-20:],
         "candle_skips": candle_skips,
+        "line_count": line_count,
     }
 
 
@@ -95,6 +104,18 @@ def summarize_db(db_path: str) -> str:
     for status, count, pnl in rows:
         parts.append(f"{status}={count} pnl={float(pnl):+.4f}")
     return " | ".join(parts)
+
+
+def _duration_text(first_ts: str | None, last_ts: str | None) -> str:
+    if not first_ts or not last_ts:
+        return "невідомо"
+    try:
+        start = datetime.strptime(first_ts, "%Y-%m-%d %H:%M:%S")
+        end = datetime.strptime(last_ts, "%Y-%m-%d %H:%M:%S")
+        seconds = max(0, int((end - start).total_seconds()))
+        return f"{seconds // 3600}h {(seconds % 3600) // 60}m {seconds % 60}s"
+    except ValueError:
+        return "невідомо"
 
 
 def render_report(summary: dict, db_path: str) -> str:
@@ -114,7 +135,8 @@ def render_report(summary: dict, db_path: str) -> str:
     lines = [
         "📋 ОПЕРАЦІЙНИЙ АНАЛІЗ ЛОГІВ",
         f"Файли: {', '.join(summary['files'])}",
-        f"Період у файлах: {summary['first_ts']} → {summary['last_ts']}",
+        f"Період у файлах: {summary['first_ts']} → {summary['last_ts']} ({_duration_text(summary['first_ts'], summary['last_ts'])})",
+        f"Рядків логу прочитано: {summary['line_count']}",
         f"Циклів: {total_cycles} | scanned={total_scanned} | setups={total_setups} | setups/cycle={(total_setups / total_cycles if total_cycles else 0):.2f}",
         f"Invalid={total_invalid} | RateLimit={total_rl} | Max dry={max_dry}",
         f"Фільтри fail: ADX={adx}, VOL={vol}, FVG={fvg}, passed_all={passed}",
@@ -122,6 +144,8 @@ def render_report(summary: dict, db_path: str) -> str:
         summarize_db(db_path),
     ]
 
+    if total_cycles == 0:
+        lines.append("⚠️ Даних ще замало: у файлі немає жодного завершеного циклу. Дай боту допрацювати хоча б 1 повний цикл або аналізуй старіший/rotated log-файл.")
     if summary["signals"]:
         lines.append("ТОП сигналів: " + "; ".join(f"{k}×{v}" for k, v in summary["signals"].most_common(10)))
     if summary["candle_skips"]:
@@ -133,14 +157,14 @@ def render_report(summary: dict, db_path: str) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Analyze bot log files from logs/*.log")
-    parser.add_argument("--logs", nargs="*", default=None, help="Explicit log files. Default: logs/*.log")
+    parser = argparse.ArgumentParser(description="Analyze bot log files from logs/*.log*")
+    parser.add_argument("--logs", nargs="*", default=None, help="Explicit log files. Default: logs/*.log* (includes rotated files)")
     parser.add_argument("--db", default="trades_history.db")
     args = parser.parse_args()
 
-    paths = args.logs or sorted(glob.glob("logs/*.log"))
+    paths = args.logs or sorted(glob.glob("logs/*.log*"))
     if not paths:
-        print("❌ logs/*.log не знайдено")
+        print("❌ logs/*.log* не знайдено")
         return 1
     print(render_report(summarize_logs(paths), args.db))
     return 0
