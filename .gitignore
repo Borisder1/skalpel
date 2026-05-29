@@ -5,3 +5,6 @@ data/
 reports/
 trades_history.db
 .gemini/
+logs/*.log
+*.db
+.venv/

@@ -9,6 +9,7 @@ import pandas as pd
 import numpy as np
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+MIN_CANDLES_REQUIRED = 50
 
 
 def ensure_data_dir():
@@ -101,6 +102,9 @@ def fetch_ohlcv(
     df.to_csv(cp, index=False)
     print(f"  ✅ Saved {len(df)} bars to {cp}")
 
+    if len(df) < MIN_CANDLES_REQUIRED:
+        print(f"  ⚠️ Пропускаємо {symbol}: мало свічок ({len(df)})")
+        return None
     return df
 
 
