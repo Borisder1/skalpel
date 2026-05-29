@@ -192,7 +192,9 @@ def load_dynamic_config():
         "sl_atr_mult": 1.0,
         "tp1_rr": 1.0,
         "tp2_rr": 2.5,
-        "risk_pct": 1.0,
+        "risk_pct": 0.5,
+        "leverage": 3.0,
+        "max_position_notional_pct": 30.0,
         "liq_lookback": 20,
         "adx_thresh": 15,
         "adx_min": 12,
@@ -282,9 +284,32 @@ def fetch_data(exchange, symbol, timeframe, limit=100):
         return None
     return df
 
-def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pct):
+def validate_trade_levels(direction: str, entry: float, sl: float, tp1: float, tp2: float) -> tuple[bool, str]:
+    """Перевіряє, що SL/TP стоять з правильного боку від entry для Bybit TP/SL."""
+    entry = float(entry)
+    sl = float(sl)
+    tp1 = float(tp1)
+    tp2 = float(tp2)
+    if direction == "LONG":
+        if not (sl < entry < tp1 <= tp2):
+            return False, f"LONG levels invalid: SL({sl}) < entry({entry}) < TP1({tp1}) <= TP2({tp2}) не виконується"
+    elif direction == "SHORT":
+        if not (tp2 <= tp1 < entry < sl):
+            return False, f"SHORT levels invalid: TP2({tp2}) <= TP1({tp1}) < entry({entry}) < SL({sl}) не виконується"
+    else:
+        return False, f"unknown direction={direction}"
+    return True, "ok"
+
+
+def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pct, leverage=3.0, max_position_notional_pct=30.0):
     """Виставляє реальний лімітний ордер на Bybit Demo з Stop Loss та Take Profit."""
     try:
+        levels_ok, levels_reason = validate_trade_levels(direction, entry, sl, tp1, tp2)
+        if not levels_ok:
+            print(f"[{datetime.now()}] ⛔ Пропускаємо {symbol}: {levels_reason}")
+            send_telegram_message(f"⛔ <b>{symbol}</b>: некоректні SL/TP — ордер не створено.<br><code>{levels_reason}</code>")
+            return None
+
         # 1. Отримуємо демо-баланс
         balance_info = safe_api_call(exchange.fetch_balance)
         free_usdt = balance_info.get('USDT', {}).get('free', 0.0)
@@ -302,6 +327,12 @@ def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pc
         risk_pct = min(max(float(risk_pct), 0.1), 1.0)
         risk_amount = free_usdt * (risk_pct / 100.0)
         qty = risk_amount / price_diff
+        leverage = min(max(float(leverage), 1.0), 10.0)
+        max_position_notional_pct = min(max(float(max_position_notional_pct), 1.0), 100.0)
+        max_notional = free_usdt * (max_position_notional_pct / 100.0) * leverage
+        if entry > 0 and qty * entry > max_notional:
+            qty = max_notional / entry
+            print(f"[{datetime.now()}] 🧯 Qty capped by notional limit: {symbol} max_notional={max_notional:.2f} USDT")
         
         # Отримуємо специфікації монети та форматуємо ціну/кількість до точності біржі
         price_str = exchange.price_to_precision(symbol, entry)
@@ -336,9 +367,9 @@ def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pc
             'tpslMode': 'Full'
         }
         
-        # Встановлюємо кредитне плече 10x перед угодою
+        # Встановлюємо контрольоване плече перед угодою
         try:
-            exchange.set_leverage(10, symbol)
+            exchange.set_leverage(leverage, symbol)
         except Exception:
             pass # Плече вже встановлене
             
@@ -358,6 +389,12 @@ def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pc
             price=float(price_str),
             params=params
         )
+        if not order:
+            return None
+        if isinstance(order, dict):
+            order["_bot_amount"] = qty_str
+            order["_bot_leverage"] = leverage
+            order["_bot_max_notional"] = max_notional
         last_order_times[symbol] = now_ts
         
         send_telegram_message(
@@ -527,9 +564,22 @@ def run_bot():
                             tp1=sig["tp1"],
                             tp2=sig["tp2"],
                             risk_pct=CONFIG["risk_pct"],
+                            leverage=CONFIG.get("leverage", 3.0),
+                            max_position_notional_pct=CONFIG.get("max_position_notional_pct", 30.0),
                         )
+                        if order:
+                            log_trade(
+                                symbol=symbol,
+                                direction=direction,
+                                entry=sig["entry"],
+                                sl=sig["sl"],
+                                tp1=sig["tp1"],
+                                tp2=sig["tp2"],
+                                fib=CONFIG.get("fib_level", 0.5),
+                                sl_mult=CONFIG.get("sl_atr_mult", 1.5),
+                            )
                         if order and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-                            qty_for_tg = order.get("amount") or order.get("qty") or sig.get("qty") or "N/A"
+                            qty_for_tg = order.get("amount") or order.get("qty") or order.get("_bot_amount") or sig.get("qty") or "N/A"
                             send_position_opened(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, {
                                 "symbol": symbol,
                                 "side": "Buy" if direction == "LONG" else "Sell",
@@ -654,14 +704,20 @@ def run_bot():
 
                 if last_state.setup and last_state.setup.valid:
                     if last_setup_bars[symbol] != last_state.timestamp:
-                        last_setup_bars[symbol] = last_state.timestamp
-                        
-                        cycle_setups += 1
                         setup = last_state.setup
+                        direction = "LONG" if setup.dir == 1 else "SHORT"
+                        levels_ok, levels_reason = validate_trade_levels(direction, setup.entry, setup.sl, setup.tp1, setup.tp2)
+                        if not levels_ok:
+                            record_event("invalid_levels", {"symbol": symbol, "direction": direction, "reason": levels_reason})
+                            print(f"[{datetime.now()}] ⛔ Некоректний сетап {symbol}: {levels_reason}")
+                            continue
+
+                        last_setup_bars[symbol] = last_state.timestamp
+                        cycle_setups += 1
                         direction_str = "LONG 🟢" if setup.dir == 1 else "SHORT 🔴"
                         
                         msg = format_signal({
-                            "direction": "LONG" if setup.dir == 1 else "SHORT",
+                            "direction": direction,
                             "symbol": symbol,
                             "entry": setup.entry,
                             "sl": setup.sl,
@@ -672,7 +728,7 @@ def run_bot():
                         print(f"[{datetime.now()}] {msg.replace('<b>', '').replace('</b>', '')}")
                         
                         signal_payload = {
-                            "direction": "LONG" if setup.dir == 1 else "SHORT",
+                            "direction": direction,
                             "symbol": symbol,
                             "entry": setup.entry,
                             "sl": setup.sl,
@@ -703,20 +759,7 @@ def run_bot():
                         else:
                             send_signal(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, signal_payload)
                         
-                        # Логування в SQLite
-                        log_trade(
-                            symbol=symbol,
-                            direction="LONG" if setup.dir == 1 else "SHORT",
-                            entry=setup.entry,
-                            sl=setup.sl,
-                            tp1=setup.tp1,
-                            tp2=setup.tp2,
-                            fib=CONFIG["fib_level"],
-                            sl_mult=CONFIG["sl_atr_mult"]
-                        )
-                        
                         # Вхід на Демо рахунку Bybit
-                        direction = "LONG" if setup.dir == 1 else "SHORT"
                         positions = get_open_positions(exchange)
                         long_count = sum(1 for p in positions if str(p.get("side") or p.get("info", {}).get("side", "")).lower() in {"buy", "long"})
                         short_count = sum(1 for p in positions if str(p.get("side") or p.get("info", {}).get("side", "")).lower() in {"sell", "short"})
@@ -735,14 +778,27 @@ def run_bot():
                                 sl=setup.sl,
                                 tp1=setup.tp1,
                                 tp2=setup.tp2,
-                                risk_pct=CONFIG["risk_pct"]
+                                risk_pct=CONFIG["risk_pct"],
+                                leverage=CONFIG.get("leverage", 3.0),
+                                max_position_notional_pct=CONFIG.get("max_position_notional_pct", 30.0),
                             )
+                            if order:
+                                log_trade(
+                                    symbol=symbol,
+                                    direction=direction,
+                                    entry=setup.entry,
+                                    sl=setup.sl,
+                                    tp1=setup.tp1,
+                                    tp2=setup.tp2,
+                                    fib=CONFIG.get("fib_level", 0.5),
+                                    sl_mult=CONFIG.get("sl_atr_mult", 1.5),
+                                )
                             if order and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
                                 send_position_opened(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, {
                                     "symbol": symbol,
                                     "side": "Buy" if direction == "LONG" else "Sell",
                                     "entry_price": setup.entry,
-                                    "qty": order.get("amount", "N/A"),
+                                    "qty": order.get("amount") or order.get("qty") or order.get("_bot_amount") or "N/A",
                                     "sl": setup.sl,
                                     "tp": setup.tp2,
                                 })
