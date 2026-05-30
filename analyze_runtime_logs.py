@@ -25,6 +25,12 @@ SIGNAL_RE = re.compile(r"⚡\s+(?P<side>🟢 LONG|🔴 SHORT) \| (?P<symbol>[^\s
 ORDER_RE = re.compile(r"ОРДЕР ВИСТАВЛЕНО НА DEMO|ДЕМО-ОРДЕР")
 ERR_RE = re.compile(r"Помилка|ERROR|Traceback|retCode|Risk guard stop|Rate limit", re.IGNORECASE)
 SKIP_CANDLES_RE = re.compile(r"Пропускаємо (?P<symbol>\S+) (?P<tf>\S+): мало свічок \((?P<count>\d+)\)")
+CONFIRM_REQ_RE = re.compile(r"Підтвердити відкриття позиції")
+CONFIRMED_RE = re.compile(r"Підтверджений сигнал|✅ Підтверджено")
+TIMEOUT_RE = re.compile(r"Сигнал скасовано по таймауту")
+ALREADY_EXISTS_RE = re.compile(r"вже стоїть ордер|вже є відкритий")
+RUNTIME_BLOCK_RE = re.compile(r"заблоковано runtime-фільтрами")
+INVALID_LEVELS_RE = re.compile(r"Некоректний сетап|некоректні SL/TP")
 TS_RE = re.compile(r"(?P<ts>20\d{2}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 
 
@@ -51,6 +57,12 @@ def summarize_logs(paths: list[str]) -> dict:
     errors = []
     candle_skips = Counter()
     orders = 0
+    confirm_requests = 0
+    confirmations = 0
+    timeouts = 0
+    already_exists = 0
+    runtime_blocks = 0
+    invalid_levels = 0
     first_ts = None
     last_ts = None
     min_ts = None
@@ -75,6 +87,18 @@ def summarize_logs(paths: list[str]) -> dict:
             signals[f"{m.group('side')} {m.group('symbol')}"] += 1
         if ORDER_RE.search(line):
             orders += 1
+        if CONFIRM_REQ_RE.search(line):
+            confirm_requests += 1
+        if CONFIRMED_RE.search(line):
+            confirmations += 1
+        if TIMEOUT_RE.search(line):
+            timeouts += 1
+        if ALREADY_EXISTS_RE.search(line):
+            already_exists += 1
+        if RUNTIME_BLOCK_RE.search(line):
+            runtime_blocks += 1
+        if INVALID_LEVELS_RE.search(line):
+            invalid_levels += 1
         if m := SKIP_CANDLES_RE.search(line):
             candle_skips[f"{m.group('symbol')} {m.group('tf')}"] += 1
         if ERR_RE.search(line):
@@ -88,6 +112,12 @@ def summarize_logs(paths: list[str]) -> dict:
         "filters": filters,
         "signals": signals,
         "orders": orders,
+        "confirm_requests": confirm_requests,
+        "confirmations": confirmations,
+        "timeouts": timeouts,
+        "already_exists": already_exists,
+        "runtime_blocks": runtime_blocks,
+        "invalid_levels": invalid_levels,
         "errors": errors[-20:],
         "candle_skips": candle_skips,
         "line_count": line_count,
@@ -141,6 +171,8 @@ def render_report(summary: dict, db_path: str) -> str:
         f"Invalid={total_invalid} | RateLimit={total_rl} | Max dry={max_dry}",
         f"Фільтри fail: ADX={adx}, VOL={vol}, FVG={fvg}, passed_all={passed}",
         f"Сигналів у логах: {sum(summary['signals'].values())} | Ордерних повідомлень: {summary['orders']}",
+        f"Funnel: confirm_req={summary['confirm_requests']} | confirmed={summary['confirmations']} | timeout={summary['timeouts']} | already_exists={summary['already_exists']}",
+        f"Quality blocks: runtime_filters={summary['runtime_blocks']} | invalid_levels={summary['invalid_levels']}",
         summarize_db(db_path),
     ]
 

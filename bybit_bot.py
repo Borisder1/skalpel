@@ -704,6 +704,18 @@ def run_bot():
 
                 if last_state.setup and last_state.setup.valid:
                     if last_setup_bars[symbol] != last_state.timestamp:
+                        adx_v = float(getattr(last_state, "adx", 0.0) or 0.0)
+                        adx_t = float(getattr(last_state, "adx_threshold", CONFIG.get("adx_min", 12)))
+                        vol_v = float(getattr(last_state, "rel_vol", 0.0) or 0.0)
+                        vol_t = float(CONFIG.get("vol_multiplier_min", CONFIG.get("vol_mult", 1.0)))
+                        fvg_v = float(getattr(last_state, "fvg_size_atr", 0.0) or 0.0)
+                        fvg_t = float(CONFIG.get("fvg_min_size", 0.08))
+                        if adx_v < adx_t or vol_v < vol_t or fvg_v < fvg_t:
+                            reason = f"ADX {adx_v:.2f}/{adx_t:.2f}, VOL {vol_v:.2f}/{vol_t:.2f}, FVG {fvg_v:.4f}/{fvg_t:.4f}"
+                            record_event("setup_blocked_by_runtime_filters", {"symbol": symbol, "reason": reason})
+                            print(f"[{datetime.now()}] 🧱 Сетап {symbol} заблоковано runtime-фільтрами: {reason}")
+                            continue
+
                         setup = last_state.setup
                         direction = "LONG" if setup.dir == 1 else "SHORT"
                         levels_ok, levels_reason = validate_trade_levels(direction, setup.entry, setup.sl, setup.tp1, setup.tp2)
