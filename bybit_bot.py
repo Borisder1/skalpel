@@ -98,6 +98,48 @@ def safe_api_call(fn, *args, retries=3, base_sleep=1.0, **kwargs):
     return None
 
 
+def extract_usdt_equity(balance: dict, fallback: float = 10000.0) -> float:
+    """Return account equity/total balance, not free margin.
+
+    Risk guards must use equity/total. Using `free` falsely shows huge DD when
+    margin is locked in open orders/positions.
+    """
+    if not isinstance(balance, dict):
+        return fallback
+
+    usdt = balance.get("USDT") or {}
+    for key in ("total", "equity", "free"):
+        try:
+            value = float(usdt.get(key) or 0.0)
+            if value > 0:
+                return value
+        except (TypeError, ValueError):
+            pass
+
+    info = balance.get("info") or {}
+    result = info.get("result") or {}
+    accounts = result.get("list") or []
+    for account in accounts:
+        for key in ("totalEquity", "totalWalletBalance", "walletBalance"):
+            try:
+                value = float(account.get(key) or 0.0)
+                if value > 0:
+                    return value
+            except (TypeError, ValueError):
+                pass
+        for coin in account.get("coin", []) or []:
+            if str(coin.get("coin", "")).upper() == "USDT":
+                for key in ("equity", "walletBalance", "usdValue"):
+                    try:
+                        value = float(coin.get(key) or 0.0)
+                        if value > 0:
+                            return value
+                    except (TypeError, ValueError):
+                        pass
+
+    return fallback
+
+
 def build_runtime_config(base_config: dict, dry_cycles_without_setups: int) -> dict:
     """Поступово послаблює фільтри, якщо ринок довго без сигналів."""
     cfg = dict(base_config)
@@ -457,9 +499,9 @@ def run_bot():
     pending_lock = threading.Lock()
     exchange = init_bybit(startup_config)
     start_bal_info = safe_api_call(exchange.fetch_balance) or {}
-    session_start_equity = float((start_bal_info.get("USDT") or {}).get("free", 0.0) or 0.0) or 10000.0
+    session_start_equity = extract_usdt_equity(start_bal_info)
     day_start_equity = session_start_equity
-    print(f"[{datetime.now()}] 💰 Стартовий баланс сесії: {session_start_equity:.4f} USDT")
+    print(f"[{datetime.now()}] 💰 Стартовий equity сесії: {session_start_equity:.4f} USDT")
     
     # Завантажуємо повний список доступних символів один раз
     all_symbols = get_all_usdt_symbols(exchange)
@@ -502,15 +544,15 @@ def run_bot():
         CONFIG["fvg_min_size"] = active_filters["fvg"]
         # FIXED: max drawdown + daily loss guard перед скануванням/ордерами.
         bal = safe_api_call(exchange.fetch_balance) or {}
-        free_now = float((bal.get("USDT") or {}).get("free", 0.0) or 0.0) or 10000.0
+        equity_now = extract_usdt_equity(bal, fallback=session_start_equity)
         today = datetime.now(timezone.utc).date()
         if day_marker != today:
             day_marker = today
-            day_start_equity = free_now
-            session_start_equity = free_now
+            day_start_equity = equity_now
+            session_start_equity = equity_now
             last_daily_report_day = day_marker
-        session_dd = ((session_start_equity - free_now) / max(session_start_equity, 1.0)) * 100.0
-        daily_dd = ((day_start_equity - free_now) / max(day_start_equity, 1.0)) * 100.0
+        session_dd = ((session_start_equity - equity_now) / max(session_start_equity, 1.0)) * 100.0
+        daily_dd = ((day_start_equity - equity_now) / max(day_start_equity, 1.0)) * 100.0
         if session_dd >= max_session_drawdown_pct or daily_dd >= max_daily_loss_pct:
             print(f"[{datetime.now()}] 🛑 Risk guard stop: session_dd={session_dd:.2f}% daily_dd={daily_dd:.2f}%")
             time.sleep(60)
@@ -704,6 +746,18 @@ def run_bot():
 
                 if last_state.setup and last_state.setup.valid:
                     if last_setup_bars[symbol] != last_state.timestamp:
+                        adx_v = float(getattr(last_state, "adx", 0.0) or 0.0)
+                        adx_t = float(getattr(last_state, "adx_threshold", CONFIG.get("adx_min", 12)))
+                        vol_v = float(getattr(last_state, "rel_vol", 0.0) or 0.0)
+                        vol_t = float(CONFIG.get("vol_multiplier_min", CONFIG.get("vol_mult", 1.0)))
+                        fvg_v = float(getattr(last_state, "fvg_size_atr", 0.0) or 0.0)
+                        fvg_t = float(CONFIG.get("fvg_min_size", 0.08))
+                        if adx_v < adx_t or vol_v < vol_t or fvg_v < fvg_t:
+                            reason = f"ADX {adx_v:.2f}/{adx_t:.2f}, VOL {vol_v:.2f}/{vol_t:.2f}, FVG {fvg_v:.4f}/{fvg_t:.4f}"
+                            record_event("setup_blocked_by_runtime_filters", {"symbol": symbol, "reason": reason})
+                            print(f"[{datetime.now()}] 🧱 Сетап {symbol} заблоковано runtime-фільтрами: {reason}")
+                            continue
+
                         setup = last_state.setup
                         direction = "LONG" if setup.dir == 1 else "SHORT"
                         levels_ok, levels_reason = validate_trade_levels(direction, setup.entry, setup.sl, setup.tp1, setup.tp2)

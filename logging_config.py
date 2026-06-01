@@ -1,12 +1,28 @@
 import builtins
 import logging
 import os
+import re
 import sys
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
 _ORIGINAL_PRINT = builtins.print
 _CONFIGURED = False
+
+
+def redact_secrets(text: object) -> str:
+    """Mask API secrets before logs are written to Render stdout/files."""
+    value = str(text)
+    value = re.sub(r"/bot[^/]+/", "/bot***/", value)
+    value = re.sub(r"bot\d+:[A-Za-z0-9_-]+", "bot***", value)
+    value = re.sub(r"\b\d{8,12}:[A-Za-z0-9_-]{20,}\b", "***TELEGRAM_TOKEN***", value)
+    value = re.sub(r"rnd_[A-Za-z0-9_-]+", "rnd_***", value)
+    return value
+
+
+class RedactingFormatter(logging.Formatter):
+    def format(self, record):
+        return redact_secrets(super().format(record))
 
 
 def setup_file_logging(app_name: str = "bot") -> str:
@@ -26,7 +42,7 @@ def setup_file_logging(app_name: str = "bot") -> str:
     logger.setLevel(logging.INFO)
 
     if not _CONFIGURED:
-        formatter = logging.Formatter(
+        formatter = RedactingFormatter(
             "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
@@ -54,7 +70,7 @@ def setup_file_logging(app_name: str = "bot") -> str:
                 message = f"{message}{end}"
             level = logging.ERROR if file is sys.stderr else logging.INFO
             print_logger = logging.getLogger("print")
-            for line in str(message).splitlines() or [""]:
+            for line in redact_secrets(message).splitlines() or [""]:
                 print_logger.log(level, line)
             for handler in logging.getLogger().handlers:
                 if flush:

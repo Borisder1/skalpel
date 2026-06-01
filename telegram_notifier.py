@@ -1,5 +1,6 @@
 import os
 import logging
+import re
 from datetime import datetime
 import requests
 from dotenv import load_dotenv
@@ -11,6 +12,13 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 logger = logging.getLogger(__name__)
 _LAST_UPDATE_ID = 0
 _PROCESSED_CALLBACKS = set()
+
+
+def _sanitize_secret(text: object) -> str:
+    text = str(text)
+    text = re.sub(r"/bot[^/]+/", "/bot***/", text)
+    text = re.sub(r"bot\d+:[A-Za-z0-9_-]+", "bot***", text)
+    return text
 
 def send_signal(token, chat_id, signal):
     direction = signal["direction"]
@@ -160,7 +168,7 @@ def poll_telegram_callbacks(token, pending_signals):
             timeout=10,
         ).json()
     except Exception as e:
-        logger.warning(f"TG callbacks poll error: {e}")
+        logger.warning("TG callbacks poll error: %s", _sanitize_secret(e))
         return
     for update in resp.get("result", []):
         _LAST_UPDATE_ID = update["update_id"] + 1
@@ -217,7 +225,7 @@ def send_telegram_message(message: str):
         if response.status_code != 200:
             print(f"⚠️ Помилка відправки в ТГ: {response.text}")
     except Exception as e:
-        print(f"⚠️ Помилка мережі при відправці в ТГ: {e}")
+        print(f"⚠️ Помилка мережі при відправці в ТГ: {_sanitize_secret(e)}")
 
 if __name__ == "__main__":
     send_telegram_message("🤖 <b>SMC Racer</b>\nМодуль Telegram успішно підключено!")
