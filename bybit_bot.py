@@ -21,7 +21,7 @@ from telegram_notifier import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
 )
-from db_logger import init_db, log_trade, update_trade_status
+from db_logger import init_db, log_trade, update_trade_status, get_open_trades, get_trade_by_order_id
 from ai_signal_agent import generate_ai_signal
 from adaptive_filters import AdaptiveFilterManager
 from pnl_tracker import record_trade, get_summary
@@ -284,6 +284,7 @@ def init_bybit(config: dict):
 
     exchange_params = {
         'enableRateLimit': True,
+        'timeout': 15000,
         'urls': {'api': base_url},
         'options': {
             'defaultType': 'future',
@@ -476,14 +477,214 @@ def has_same_direction_open_order(orders, direction: str) -> bool:
     return False
 
 
-def can_open_position(direction: str, open_positions: dict) -> bool:
-    if direction == "LONG" and open_positions.get("long_count", 0) >= 1:
-        print(f"[{datetime.now()}] ⛔ LONG вже відкрито — пропускаємо")
+def can_open_position(symbol: str, direction: str, open_positions: list, open_orders: list, config: dict) -> bool:
+    # 1. Check if a position in the same direction is already open for this symbol
+    symbol_positions = [p for p in open_positions if p.get("symbol") == symbol]
+    side_target = "buy" if direction == "LONG" else "sell"
+    for p in symbol_positions:
+        side = str(p.get("side") or p.get("info", {}).get("side", "")).lower()
+        if side in {"buy", "long"} and side_target == "buy":
+            print(f"[{datetime.now()}] ⛔ LONG вже відкрито для {symbol} — пропускаємо")
+            return False
+        if side in {"sell", "short"} and side_target == "sell":
+            print(f"[{datetime.now()}] ⛔ SHORT вже відкрито для {symbol} — пропускаємо")
+            return False
+            
+    # 2. Check global portfolio max concurrent positions + active limit orders limit
+    max_positions = int(config.get("max_concurrent_positions", 5))
+    total_active = len(open_positions) + len(open_orders)
+    if total_active >= max_positions:
+        print(f"[{datetime.now()}] ⛔ Досягнуто ліміт активних позицій/ордерів портфеля ({total_active}/{max_positions}) — пропускаємо")
         return False
-    if direction == "SHORT" and open_positions.get("short_count", 0) >= 1:
-        print(f"[{datetime.now()}] ⛔ SHORT вже відкрито — пропускаємо")
-        return False
+        
     return True
+
+
+def cancel_stale_orders(exchange, config: dict):
+    """Скасовує лімітні ордери, що висять занадто довго або пробили SL до входу."""
+    open_orders = get_open_orders(exchange)
+    if not open_orders:
+        return
+        
+    max_age_sec = int(config.get("max_order_age_seconds", 7200))
+    now_ts = time.time()
+    
+    # Отримуємо тикери для перевірки ціни
+    symbols_to_check = list(set(o.get("symbol") for o in open_orders if o.get("symbol")))
+    tickers = {}
+    if symbols_to_check:
+        try:
+            tickers = exchange.fetch_tickers(symbols_to_check)
+        except Exception as e:
+            print(f"[{datetime.now()}] ⚠️ Помилка отримання тикерів для перевірки SL: {e}")
+            
+    for o in open_orders:
+        symbol = o.get("symbol")
+        order_id = o.get("id")
+        timestamp = o.get("timestamp")  # milliseconds
+        
+        if not symbol or not order_id:
+            continue
+            
+        # 1. Перевірка за часом життя
+        if timestamp:
+            age_sec = now_ts - (timestamp / 1000.0)
+            if age_sec > max_age_sec:
+                print(f"[{datetime.now()}] 🕒 Ордер {order_id} ({symbol}) застарів ({age_sec:.0f}s > {max_age_sec}s). Скасовуємо.")
+                safe_api_call(exchange.cancel_order, order_id, symbol)
+                send_telegram_message(f"🕒 <b>Скасовано застарілий ордер</b>\nМонета: <b>{symbol}</b>\nВік: {age_sec/60:.1f} хв")
+                update_trade_status(symbol=symbol, status="CANCELLED", pnl=0.0, order_id=order_id)
+                continue
+                
+        # 2. Перевірка пробиття Stop Loss до входу
+        trade = get_trade_by_order_id(order_id)
+        if trade and tickers.get(symbol):
+            current_price = float(tickers[symbol].get("last") or tickers[symbol].get("close") or 0.0)
+            sl = float(trade.get("stop_loss") or 0.0)
+            direction = str(trade.get("direction")).upper()
+            
+            if current_price > 0 and sl > 0:
+                if direction == "LONG" and current_price <= sl:
+                    print(f"[{datetime.now()}] 🛑 Ціна {current_price} пробила SL {sl} для LONG {symbol} до входу. Скасовуємо ордер {order_id}.")
+                    safe_api_call(exchange.cancel_order, order_id, symbol)
+                    send_telegram_message(f"🛑 <b>Скасовано ордер (SL пробито до входу)</b>\nМонета: <b>{symbol}</b>\nЦіна: {current_price} | SL: {sl}")
+                    update_trade_status(symbol=symbol, status="CANCELLED", pnl=0.0, order_id=order_id)
+                elif direction == "SHORT" and current_price >= sl:
+                    print(f"[{datetime.now()}] 🛑 Ціна {current_price} пробила SL {sl} для SHORT {symbol} до входу. Скасовуємо ордер {order_id}.")
+                    safe_api_call(exchange.cancel_order, order_id, symbol)
+                    send_telegram_message(f"🛑 <b>Скасовано ордер (SL пробито до входу)</b>\nМонета: <b>{symbol}</b>\nЦіна: {current_price} | SL: {sl}")
+                    update_trade_status(symbol=symbol, status="CANCELLED", pnl=0.0, order_id=order_id)
+
+
+def sync_open_trades(exchange):
+    """Синхронізує відкриті угоди в базі даних з їх реальним статусом на Bybit."""
+    try:
+        open_trades = get_open_trades()
+        if not open_trades:
+            return
+
+        # Отримуємо відкриті позиції на біржі
+        positions = get_open_positions(exchange)
+        
+        for t in open_trades:
+            symbol = t.get("symbol")
+            direction = t.get("direction")
+            order_id = t.get("order_id")
+            entry_price = t.get("entry_price")
+            
+            if not symbol:
+                continue
+                
+            # 1. Перевіряємо, чи є активна позиція по цьому символу
+            symbol_positions = [p for p in positions if p.get("symbol") == symbol]
+            side_target = "buy" if direction == "LONG" else "sell"
+            has_active_position = False
+            
+            for p in symbol_positions:
+                side = str(p.get("side") or p.get("info", {}).get("side", "")).lower()
+                if side in {"buy", "long"} and side_target == "buy":
+                    has_active_position = True
+                elif side in {"sell", "short"} and side_target == "sell":
+                    has_active_position = True
+                    
+            if has_active_position:
+                # Позиція ще відкрита
+                continue
+                
+            # 2. Якщо позиції немає, перевіряємо чи активний ще лімітний ордер на Bybit
+            open_orders = get_open_orders(exchange, symbol)
+            order_is_active = False
+            if order_id:
+                order_is_active = any(o.get("id") == order_id for o in open_orders)
+            else:
+                order_is_active = has_same_direction_open_order(open_orders, direction)
+                
+            if order_is_active:
+                # Ордер ще чекає у стакані
+                continue
+                
+            # 3. Угоду закрили або скасували
+            was_filled = False
+            actual_pnl = 0.0
+            exit_price = entry_price
+            
+            if order_id:
+                try:
+                    order_info = exchange.fetch_order(order_id, symbol)
+                    status = order_info.get("status")
+                    if status == "canceled" or status == "rejected":
+                        print(f"[{datetime.now()}] ℹ️ Ордер {order_id} ({symbol}) скасовано.")
+                        update_trade_status(symbol=symbol, status="CANCELLED", pnl=0.0, order_id=order_id)
+                        continue
+                    elif status == "closed":
+                        was_filled = True
+                except Exception as e:
+                    print(f"[{datetime.now()}] ⚠️ Не вдалося отримати статус ордера {order_id}: {e}")
+                    # Вважаємо закритим, якщо його немає в активних
+                    was_filled = True
+            else:
+                was_filled = True
+                
+            if was_filled:
+                try:
+                    closed_pnl_records = safe_api_call(exchange.fetch_closed_pnl, symbol=symbol) or []
+                    if closed_pnl_records:
+                        latest_pnl = closed_pnl_records[-1]
+                        actual_pnl = float(latest_pnl.get("closedPnl") or 0.0)
+                        exit_price = float(latest_pnl.get("avgExitPrice") or entry_price)
+                        status_outcome = "WIN" if actual_pnl > 0 else "LOSS"
+                        
+                        update_trade_status(symbol=symbol, status=status_outcome, pnl=actual_pnl, order_id=order_id)
+                        record_trade(symbol, direction, entry_price, exit_price, actual_pnl)
+                        print(f"[{datetime.now()}] 🎯 Угода {symbol} закрита: {status_outcome} PnL={actual_pnl:.4f} USDT")
+                        continue
+                except Exception as e:
+                    print(f"[{datetime.now()}] ⚠️ Помилка fetch_closed_pnl для {symbol}: {e}")
+                    
+                # Fallback за логікою цінових рівнів
+                try:
+                    ohlcv = fetch_data(exchange, symbol, "15m", limit=20)
+                    if ohlcv is not None:
+                        highs = ohlcv["high"].tolist()
+                        lows = ohlcv["low"].tolist()
+                        tp2 = t.get("take_profit_2") or (entry_price * 1.05 if direction == "LONG" else entry_price * 0.95)
+                        sl = t.get("stop_loss") or (entry_price * 0.98 if direction == "LONG" else entry_price * 1.02)
+                        
+                        reached_tp = False
+                        reached_sl = False
+                        
+                        if direction == "LONG":
+                            if max(highs) >= tp2:
+                                reached_tp = True
+                            if min(lows) <= sl:
+                                reached_sl = True
+                        else:
+                            if min(lows) <= tp2:
+                                reached_tp = True
+                            if max(highs) >= sl:
+                                reached_sl = True
+                                
+                        if reached_tp and not reached_sl:
+                            status_outcome = "WIN"
+                            exit_price = tp2
+                            actual_pnl = abs(tp2 - entry_price)
+                        elif reached_sl:
+                            status_outcome = "LOSS"
+                            exit_price = sl
+                            actual_pnl = -abs(entry_price - sl)
+                        else:
+                            status_outcome = "WIN"
+                            exit_price = entry_price
+                            actual_pnl = 0.0
+                            
+                        update_trade_status(symbol=symbol, status=status_outcome, pnl=actual_pnl, order_id=order_id)
+                        record_trade(symbol, direction, entry_price, exit_price, actual_pnl)
+                        print(f"[{datetime.now()}] 🎯 Угода {symbol} закрита (fallback): {status_outcome} PnL={actual_pnl:.4f} USDT")
+                except Exception as e_fallback:
+                    print(f"[{datetime.now()}] ⚠️ Не вдалося синхронізувати угоду {symbol} через fallback: {e_fallback}")
+    except Exception as e_sync:
+        print(f"[{datetime.now()}] ⚠️ Помилка у sync_open_trades: {e_sync}")
+
 
 def run_bot():
     # Ініціалізуємо БД
@@ -593,9 +794,8 @@ def run_bot():
                             pending_keys.discard((symbol, direction))
                         continue
                     positions = get_open_positions(exchange)
-                    long_count = sum(1 for p in positions if str(p.get("side") or p.get("info", {}).get("side", "")).lower() in {"buy", "long"})
-                    short_count = sum(1 for p in positions if str(p.get("side") or p.get("info", {}).get("side", "")).lower() in {"sell", "short"})
-                    if can_open_position(direction, {"long_count": long_count, "short_count": short_count}):
+                    open_orders = get_open_orders(exchange)
+                    if can_open_position(symbol, direction, positions, open_orders, CONFIG):
                         print(f"[{datetime.now()}] 📤 Підтверджений сигнал, відправляємо ордер на DEMO: {symbol} {direction}")
                         order = execute_demo_order(
                             exchange=exchange,
@@ -619,6 +819,7 @@ def run_bot():
                                 tp2=sig["tp2"],
                                 fib=CONFIG.get("fib_level", 0.5),
                                 sl_mult=CONFIG.get("sl_atr_mult", 1.5),
+                                order_id=order.get("id"),
                             )
                         if order and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
                             qty_for_tg = order.get("amount") or order.get("qty") or order.get("_bot_amount") or sig.get("qty") or "N/A"
@@ -653,6 +854,10 @@ def run_bot():
                     continue
 
         process_pending_confirmations()
+        # Синхронізація угод та скасування застарілих ордерів
+        sync_open_trades(exchange)
+        cancel_stale_orders(exchange, CONFIG)
+
         cycle_scanned = 0
         cycle_setups = 0
         cycle_invalid_symbols = 0
@@ -815,11 +1020,8 @@ def run_bot():
                         
                         # Вхід на Демо рахунку Bybit
                         positions = get_open_positions(exchange)
-                        long_count = sum(1 for p in positions if str(p.get("side") or p.get("info", {}).get("side", "")).lower() in {"buy", "long"})
-                        short_count = sum(1 for p in positions if str(p.get("side") or p.get("info", {}).get("side", "")).lower() in {"sell", "short"})
-                        open_pos = {"long_count": long_count, "short_count": short_count}
-                        if not can_open_position(direction, open_pos):
-                            send_telegram_message(f"⛔ {symbol}: позиція вже відкрита в цьому напрямку")
+                        open_orders = get_open_orders(exchange)
+                        if not can_open_position(symbol, direction, positions, open_orders, CONFIG):
                             continue
                         if CONFIG.get("dry_run", True):
                             print(f"[{datetime.now()}] 🧪 dry_run=true, ордер НЕ відправлено для {symbol}")
@@ -846,6 +1048,7 @@ def run_bot():
                                     tp2=setup.tp2,
                                     fib=CONFIG.get("fib_level", 0.5),
                                     sl_mult=CONFIG.get("sl_atr_mult", 1.5),
+                                    order_id=order.get("id"),
                                 )
                             if order and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
                                 send_position_opened(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, {

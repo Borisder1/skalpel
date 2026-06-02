@@ -66,6 +66,7 @@ def generate_ai_signal(exchange, symbols, timeframe="15m"):
                     temperature=0.2,
                     top_p=0.9,
                     max_tokens=400,
+                    timeout=15.0,  # 15 seconds timeout
                 )
             except Exception as e:
                 if "429" in str(e):
@@ -85,7 +86,24 @@ def generate_ai_signal(exchange, symbols, timeframe="15m"):
         if content is None:
             print("[AI Signal Agent] AI API повернув None")
             return None
+            
         text = content.strip()
+        
+        # Robust Markdown JSON code blocks cleaning
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            text = "\n".join(lines).strip()
+            
+        # Robust Regex JSON object extraction
+        import re
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            text = match.group(0)
+            
         data = json.loads(text)
         if data.get("direction") not in {"LONG", "SHORT", "NONE"}:
             return None
