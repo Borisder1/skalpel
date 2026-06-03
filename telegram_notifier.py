@@ -169,7 +169,7 @@ def poll_telegram_callbacks(token, pending_signals):
         ).json()
     except Exception as e:
         logger.warning("TG callbacks poll error: %s", _sanitize_secret(e))
-        return
+        return False
     for update in resp.get("result", []):
         _LAST_UPDATE_ID = update["update_id"] + 1
         callback = update.get("callback_query")
@@ -210,6 +210,7 @@ def poll_telegram_callbacks(token, pending_signals):
                 },
                 timeout=10,
             )
+    return True
 
 
 def send_telegram_message(message: str):

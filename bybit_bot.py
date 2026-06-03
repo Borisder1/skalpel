@@ -468,6 +468,26 @@ def get_open_orders(exchange, symbol=None):
     except Exception:
         return []
 
+def fetch_closed_pnl_bybit(exchange, symbol):
+    """Отримує історію закритих PnL для символу з Bybit V5 API."""
+    try:
+        market = exchange.market(symbol)
+        market_id = market['id']
+        params = {
+            'category': 'linear',
+            'symbol': market_id,
+            'limit': 20
+        }
+        response = safe_api_call(exchange.private_get_v5_position_closed_pnl, params)
+        if response and isinstance(response, dict) and response.get('retCode') == 0:
+            records = response.get('result', {}).get('list', [])
+            if isinstance(records, list):
+                records.sort(key=lambda x: int(x.get("createdTime") or 0))
+                return records
+    except Exception as e:
+        print(f"[{datetime.now()}] ⚠️ Помилка fetch_closed_pnl_bybit для {symbol}: {e}")
+    return []
+
 def has_same_direction_open_order(orders, direction: str) -> bool:
     side_target = "buy" if direction == "LONG" else "sell"
     for o in orders:
@@ -627,7 +647,7 @@ def sync_open_trades(exchange):
                 
             if was_filled:
                 try:
-                    closed_pnl_records = safe_api_call(exchange.fetch_closed_pnl, symbol=symbol) or []
+                    closed_pnl_records = fetch_closed_pnl_bybit(exchange, symbol)
                     if closed_pnl_records:
                         latest_pnl = closed_pnl_records[-1]
                         actual_pnl = float(latest_pnl.get("closedPnl") or 0.0)
@@ -639,7 +659,7 @@ def sync_open_trades(exchange):
                         print(f"[{datetime.now()}] 🎯 Угода {symbol} закрита: {status_outcome} PnL={actual_pnl:.4f} USDT")
                         continue
                 except Exception as e:
-                    print(f"[{datetime.now()}] ⚠️ Помилка fetch_closed_pnl для {symbol}: {e}")
+                    print(f"[{datetime.now()}] ⚠️ Помилка fetch_closed_pnl_bybit для {symbol}: {e}")
                     
                 # Fallback за логікою цінових рівнів
                 try:
@@ -721,12 +741,19 @@ def run_bot():
 
     if require_confirmation and TELEGRAM_BOT_TOKEN:
         def _tg_callback_loop():
+            consecutive_failures = 0
             while True:
                 with pending_lock:
-                    poll_telegram_callbacks(TELEGRAM_BOT_TOKEN, pending_signals)
-                time.sleep(0.8)
+                    success = poll_telegram_callbacks(TELEGRAM_BOT_TOKEN, pending_signals)
+                if success:
+                    consecutive_failures = 0
+                    time.sleep(0.8)
+                else:
+                    consecutive_failures += 1
+                    sleep_time = min(30.0, 0.8 * (2 ** consecutive_failures))
+                    time.sleep(sleep_time)
         threading.Thread(target=_tg_callback_loop, name="tg-callback-poller", daemon=True).start()
-        print(f"[{datetime.now()}] ✅ Telegram callback poller запущено в окремому потоці")
+        print(f"[{datetime.now()}] ✅ Telegram callback poller запущено в окремому потоці (з адаптивним бекоффом)")
 
     # Запускаємо перший цикл консенсусу ШІ-агентів через 10 секунд після старту
     last_agents_run = time.time() - 86000 # Запустить через 40 секунд після запуску бота
