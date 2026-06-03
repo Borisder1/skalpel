@@ -982,7 +982,9 @@ def run_bot():
                         adx_t = float(getattr(last_state, "adx_threshold", CONFIG.get("adx_min", 12)))
                         vol_v = float(getattr(last_state, "rel_vol", 0.0) or 0.0)
                         vol_t = float(CONFIG.get("vol_multiplier_min", CONFIG.get("vol_mult", 1.0)))
-                        fvg_v = float(getattr(last_state, "fvg_size_atr", 0.0) or 0.0)
+                        born_idx = last_state.setup.born_bar
+                        birth_bar = states[born_idx] if 0 <= born_idx < len(states) else last_state
+                        fvg_v = float(getattr(birth_bar, "fvg_size_atr", 0.0) or 0.0)
                         fvg_t = float(CONFIG.get("fvg_min_size", 0.08))
                         if adx_v < adx_t or vol_v < vol_t or fvg_v < fvg_t:
                             reason = f"ADX {adx_v:.2f}/{adx_t:.2f}, VOL {vol_v:.2f}/{vol_t:.2f}, FVG {fvg_v:.4f}/{fvg_t:.4f}"

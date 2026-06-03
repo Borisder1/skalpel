@@ -65,7 +65,7 @@ def generate_ai_signal(exchange, symbols, timeframe="15m"):
                     ],
                     temperature=0.2,
                     top_p=0.9,
-                    max_tokens=400,
+                    max_tokens=1024,
                     timeout=15.0,  # 15 seconds timeout
                 )
             except Exception as e:
@@ -84,7 +84,7 @@ def generate_ai_signal(exchange, symbols, timeframe="15m"):
             return None
         content = resp.choices[0].message.content if resp.choices and resp.choices[0].message else None
         if content is None:
-            print("[AI Signal Agent] AI API повернув None")
+            print(f"[AI Signal Agent] AI API повернув None. Повна відповідь: {resp}")
             return None
             
         text = content.strip()
