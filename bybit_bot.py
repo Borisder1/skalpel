@@ -520,6 +520,18 @@ def can_open_position(symbol: str, direction: str, open_positions: list, open_or
     return True
 
 
+def safe_cancel_order(exchange, order_id, symbol):
+    """Безпечно скасовує ордер на Bybit, не допускаючи крашу при OrderNotFound."""
+    try:
+        return safe_api_call(exchange.cancel_order, order_id, symbol)
+    except ccxt.OrderNotFound:
+        print(f"[{datetime.now()}] ℹ️ Ордер {order_id} ({symbol}) вже не існує на Bybit (можливо, заповнений або скасований).")
+        return None
+    except Exception as e:
+        print(f"[{datetime.now()}] ⚠️ Не вдалося скасувати ордер {order_id} ({symbol}): {e}")
+        return None
+
+
 def cancel_stale_orders(exchange, config: dict):
     """Скасовує лімітні ордери, що висять занадто довго або пробили SL до входу."""
     open_orders = get_open_orders(exchange)
@@ -551,7 +563,7 @@ def cancel_stale_orders(exchange, config: dict):
             age_sec = now_ts - (timestamp / 1000.0)
             if age_sec > max_age_sec:
                 print(f"[{datetime.now()}] 🕒 Ордер {order_id} ({symbol}) застарів ({age_sec:.0f}s > {max_age_sec}s). Скасовуємо.")
-                safe_api_call(exchange.cancel_order, order_id, symbol)
+                safe_cancel_order(exchange, order_id, symbol)
                 send_telegram_message(f"🕒 <b>Скасовано застарілий ордер</b>\nМонета: <b>{symbol}</b>\nВік: {age_sec/60:.1f} хв")
                 update_trade_status(symbol=symbol, status="CANCELLED", pnl=0.0, order_id=order_id)
                 continue
@@ -566,12 +578,12 @@ def cancel_stale_orders(exchange, config: dict):
             if current_price > 0 and sl > 0:
                 if direction == "LONG" and current_price <= sl:
                     print(f"[{datetime.now()}] 🛑 Ціна {current_price} пробила SL {sl} для LONG {symbol} до входу. Скасовуємо ордер {order_id}.")
-                    safe_api_call(exchange.cancel_order, order_id, symbol)
+                    safe_cancel_order(exchange, order_id, symbol)
                     send_telegram_message(f"🛑 <b>Скасовано ордер (SL пробито до входу)</b>\nМонета: <b>{symbol}</b>\nЦіна: {current_price} | SL: {sl}")
                     update_trade_status(symbol=symbol, status="CANCELLED", pnl=0.0, order_id=order_id)
                 elif direction == "SHORT" and current_price >= sl:
                     print(f"[{datetime.now()}] 🛑 Ціна {current_price} пробила SL {sl} для SHORT {symbol} до входу. Скасовуємо ордер {order_id}.")
-                    safe_api_call(exchange.cancel_order, order_id, symbol)
+                    safe_cancel_order(exchange, order_id, symbol)
                     send_telegram_message(f"🛑 <b>Скасовано ордер (SL пробито до входу)</b>\nМонета: <b>{symbol}</b>\nЦіна: {current_price} | SL: {sl}")
                     update_trade_status(symbol=symbol, status="CANCELLED", pnl=0.0, order_id=order_id)
 
