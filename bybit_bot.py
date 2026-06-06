@@ -497,24 +497,33 @@ def has_same_direction_open_order(orders, direction: str) -> bool:
     return False
 
 
-def can_open_position(symbol: str, direction: str, open_positions: list, open_orders: list, config: dict) -> bool:
+def can_open_position(symbol: str, direction: str, open_positions: list, open_orders: list, config: dict, notify_tg: bool = False) -> bool:
     # 1. Check if a position in the same direction is already open for this symbol
     symbol_positions = [p for p in open_positions if p.get("symbol") == symbol]
     side_target = "buy" if direction == "LONG" else "sell"
     for p in symbol_positions:
         side = str(p.get("side") or p.get("info", {}).get("side", "")).lower()
         if side in {"buy", "long"} and side_target == "buy":
-            print(f"[{datetime.now()}] ⛔ LONG вже відкрито для {symbol} — пропускаємо")
+            msg = f"⛔ LONG вже відкрито для {symbol} — пропускаємо"
+            print(f"[{datetime.now()}] {msg}")
+            if notify_tg:
+                send_telegram_message(msg)
             return False
         if side in {"sell", "short"} and side_target == "sell":
-            print(f"[{datetime.now()}] ⛔ SHORT вже відкрито для {symbol} — пропускаємо")
+            msg = f"⛔ SHORT вже відкрито для {symbol} — пропускаємо"
+            print(f"[{datetime.now()}] {msg}")
+            if notify_tg:
+                send_telegram_message(msg)
             return False
             
     # 2. Check global portfolio max concurrent positions + active limit orders limit
     max_positions = int(config.get("max_concurrent_positions", 5))
     total_active = len(open_positions) + len(open_orders)
     if total_active >= max_positions:
-        print(f"[{datetime.now()}] ⛔ Досягнуто ліміт активних позицій/ордерів портфеля ({total_active}/{max_positions}) — пропускаємо")
+        msg = f"⛔ Досягнуто ліміт активних позицій/ордерів портфеля ({total_active}/{max_positions}) — пропускаємо {symbol}"
+        print(f"[{datetime.now()}] {msg}")
+        if notify_tg:
+            send_telegram_message(msg)
         return False
         
     return True
@@ -675,8 +684,9 @@ def sync_open_trades(exchange):
                     
                 # Fallback за логікою цінових рівнів
                 try:
-                    ohlcv = fetch_data(exchange, symbol, "15m", limit=20)
-                    if ohlcv is not None:
+                    raw_ohlcv = safe_api_call(exchange.fetch_ohlcv, symbol, "15m", limit=20)
+                    if raw_ohlcv:
+                        ohlcv = pd.DataFrame(raw_ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
                         highs = ohlcv["high"].tolist()
                         lows = ohlcv["low"].tolist()
                         tp2 = t.get("take_profit_2") or (entry_price * 1.05 if direction == "LONG" else entry_price * 0.95)
@@ -834,7 +844,7 @@ def run_bot():
                         continue
                     positions = get_open_positions(exchange)
                     open_orders = get_open_orders(exchange)
-                    if can_open_position(symbol, direction, positions, open_orders, CONFIG):
+                    if can_open_position(symbol, direction, positions, open_orders, CONFIG, notify_tg=True):
                         print(f"[{datetime.now()}] 📤 Підтверджений сигнал, відправляємо ордер на DEMO: {symbol} {direction}")
                         order = execute_demo_order(
                             exchange=exchange,
