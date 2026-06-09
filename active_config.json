@@ -27,7 +27,8 @@
     "rotate_step": 20,
     "leverage": 3.0,
     "max_position_notional_pct": 30.0,
-    "max_active_orders": 5,
-    "max_concurrent_positions": 5,
-    "max_order_age_seconds": 7200
+    "max_active_orders": 10,
+    "max_concurrent_positions": 10,
+    "max_order_age_seconds": 7200,
+    "auto_execute_confidence_threshold": 0.70
 }

@@ -22,7 +22,7 @@ from telegram_notifier import (
     TELEGRAM_CHAT_ID,
 )
 from db_logger import init_db, log_trade, update_trade_status, get_open_trades, get_trade_by_order_id
-from ai_signal_agent import generate_ai_signal
+from ai_signal_agent import generate_ai_signal, evaluate_specific_setup
 from adaptive_filters import AdaptiveFilterManager
 from pnl_tracker import record_trade, get_summary
 from ops_dashboard import record_cycle, record_event, build_24h_report
@@ -1059,8 +1059,36 @@ def run_bot():
                             "tp2": setup.tp2,
                             "atr": getattr(last_state, "atr", 0),
                         }
+                        
+                        # --- AI Confidence Routing ---
+                        print(f"[{datetime.now()}] 🤖 Оцінка AI для {symbol}...")
+                        ai_eval = evaluate_specific_setup(
+                            exchange=exchange,
+                            symbol=symbol,
+                            direction=direction,
+                            entry=setup.entry,
+                            sl=setup.sl,
+                            tp=setup.tp2,
+                            atr=signal_payload["atr"]
+                        )
+                        conf = ai_eval.get("confidence", 0.0)
+                        rationale = ai_eval.get("rationale", "")
+                        auto_thresh = float(CONFIG.get("auto_execute_confidence_threshold", 0.70))
+                        
+                        signal_payload["ai_confidence"] = conf
+                        signal_payload["ai_rationale"] = rationale
+                        
+                        is_auto_execute = conf >= auto_thresh
+                        
+                        if is_auto_execute and TELEGRAM_BOT_TOKEN:
+                            send_telegram_message(
+                                f"⚡ <b>AI Auto-Execute ({conf*100:.0f}%)</b>\n"
+                                f"<b>{symbol}</b> {direction_str}\n"
+                                f"<i>{rationale}</i>"
+                            )
+                        
                         # Сповіщення в Telegram
-                        if require_confirmation and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+                        if require_confirmation and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID and not is_auto_execute:
                             signal_id = f"{symbol}-{int(time.time())}"
                             signal_key = (signal_payload["symbol"], signal_payload["direction"])
                             symbol_open_orders = get_open_orders(exchange, symbol)
