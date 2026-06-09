@@ -167,7 +167,8 @@ def select_symbols_for_scan(exchange, symbols: list, config: dict, cycle_index: 
         return []
 
     try:
-        tickers = exchange.fetch_tickers(symbols)
+        from async_scanner import get_tickers_parallel
+        tickers = get_tickers_parallel(symbols)
         def quote_volume(sym):
             t = tickers.get(sym, {}) if isinstance(tickers, dict) else {}
             return float(t.get("quoteVolume") or t.get("baseVolume") or 0.0)

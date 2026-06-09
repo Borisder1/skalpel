@@ -179,7 +179,13 @@ def evaluate_specific_setup(exchange, symbol, direction, entry, sl, tp, atr):
         if resp is None:
             return {"confidence": 0.0, "rationale": "API Timeout or Error"}
         
-        content = resp.choices[0].message.content if resp.choices else ""
+        content = None
+        if resp.choices and resp.choices[0].message:
+            content = resp.choices[0].message.content
+        
+        if not content:
+            print(f"[AI Signal Agent] AI API повернув порожній content для {symbol}")
+            return {"confidence": 0.0, "rationale": "AI returned empty response"}
         
         import re
         match = re.search(r"\{.*\}", content, re.DOTALL)
