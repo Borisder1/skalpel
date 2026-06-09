@@ -753,9 +753,11 @@ def run_bot():
     day_marker = None
     last_daily_report_day = None
 
+    leverage = startup_config.get('leverage', 3.0)
+    risk_pct = startup_config.get('risk_pct', 0.5)
     send_telegram_message(
         f"🚀 <b>SMC Racer (Мульти-Агентна версія)</b> активована!\n"
-        f"Режим: <b>DEMO TRADING</b> (Плече 10x, Ризик 1%)\n"
+        f"Режим: <b>DEMO TRADING</b> (Плече {leverage}x, Ризик {risk_pct}%)\n"
         f"Доступно пар на Bybit: <b>{len(all_symbols)}</b>.\n"
         f"Очікую сигнали..."
     )
@@ -919,6 +921,10 @@ def run_bot():
         fvg_fail = 0
         passed_all = 0
         debug_logged = False
+        
+        diag_pair = None
+        diag_margin = 1e9
+        diag_block = {}
 
         max_symbols = max(1, int(CONFIG.get("max_symbols", 120)))
         symbol_offset = int(CONFIG.get("symbol_offset", 0))
@@ -962,6 +968,13 @@ def run_bot():
                     vol_t = float(CONFIG.get("vol_multiplier_min", CONFIG.get("vol_mult", 1.0)))
                     fvg_v = float(getattr(last_state, "fvg_size_atr", 0.0))
                     fvg_t = float(CONFIG.get("fvg_min_size", 0.08))
+                    
+                    margin = abs(adx_t - adx_v)
+                    if margin < diag_margin:
+                        diag_margin = margin
+                        diag_pair = symbol
+                        diag_block = {"adx": adx_v, "adx_t": adx_t, "vol": vol_v, "vol_t": vol_t, "fvg": fvg_v, "fvg_t": fvg_t}
+                        
                     if adx_v < adx_t:
                         pairs_filtered_by_adx += 1
                         adx_fail += 1
@@ -1185,31 +1198,6 @@ def run_bot():
             "passed_all": passed_all,
             "filter_level": filter_manager.get_status(),
         })
-        # Heartbeat diagnostics source: остання пара з найменшим запасом до ADX порогу
-        diag_pair = None
-        diag_margin = 1e9
-        diag_block = {}
-        for symbol in cycle_symbols:
-            try:
-                df = fetch_data(exchange, symbol, TIMEFRAME, limit=100)
-                htf_df = fetch_data(exchange, symbol, "4h", limit=50)
-                if df is None or htf_df is None:
-                    continue
-                st = analyze_racer(df, htf_df, CONFIG)[-1]
-                adx_v = float(st.adx) if not pd.isna(st.adx) else 0.0
-                adx_t = float(getattr(st, "adx_threshold", CONFIG.get("adx_min", CONFIG.get("adx_thresh", 15))))
-                rel_vol = float(getattr(st, "rel_vol", 0.0))
-                vol_t = float(CONFIG.get("vol_multiplier_min", CONFIG.get("vol_mult", 1.0)))
-                fvg_sz = float(getattr(st, "fvg_size_atr", 0.0))
-                fvg_t = float(CONFIG.get("fvg_min_size", 0.08))
-                margin = abs(adx_t - adx_v)
-                if margin < diag_margin:
-                    diag_margin = margin
-                    diag_pair = symbol
-                    diag_block = {"adx": adx_v, "adx_t": adx_t, "vol": rel_vol, "vol_t": vol_t, "fvg": fvg_sz, "fvg_t": fvg_t}
-            except Exception:
-                continue
-
         if time.time() - last_health_ping > 7200:
             if diag_pair:
                 adx_line = f"ADX: {diag_block['adx']:.2f} {'<' if diag_block['adx'] < diag_block['adx_t'] else '>='} поріг {diag_block['adx_t']:.2f}"
@@ -1217,8 +1205,9 @@ def run_bot():
                 fvg_line = f"FVG: {diag_block['fvg']:.2f} {'<' if diag_block['fvg'] < diag_block['fvg_t'] else '>='} поріг {diag_block['fvg_t']:.2f}"
             else:
                 adx_line = vol_line = fvg_line = "n/a"
-                send_telegram_message(
-                    f"🩺 <b>Heartbeat SMC Racer</b>\n"
+                
+            send_telegram_message(
+                f"🩺 <b>Heartbeat SMC Racer</b>\n"
                 f"Скановано пар: <b>{cycle_scanned}</b>\n"
                 f"Сетапів за цикл: <b>{cycle_setups}</b>\n"
                 f"RateLimit помилок: <b>{cycle_rate_limits}</b>\n"
@@ -1229,9 +1218,9 @@ def run_bot():
                 f"Пар відфільтровано (ADX < поріг): <b>{pairs_filtered_by_adx}</b>\n"
                 f"Фільтри зараз → ADX: <b>{CONFIG.get('adx_thresh')}</b>, VOL: <b>{CONFIG.get('vol_multiplier_min', CONFIG.get('vol_mult'))}</b>, FVG: <b>{CONFIG.get('fvg_min_size')}</b>\n"
                 f"Остання пара з найближчим сетапом: <b>{diag_pair or 'n/a'}</b>\n"
-                    f"├── {adx_line}\n├── {vol_line}\n└── {fvg_line}"
-                )
-                print(f"[{datetime.now()}] {build_24h_report().replace('<b>', '').replace('</b>', '')}")
+                f"├── {adx_line}\n├── {vol_line}\n└── {fvg_line}"
+            )
+            print(f"[{datetime.now()}] {build_24h_report().replace('<b>', '').replace('</b>', '')}")
             last_health_ping = time.time()
 
         if cycle_setups == 0 and dry_cycles_without_setups >= 4 and (time.time() - last_ai_signal_ping > 1800):

@@ -4,6 +4,7 @@ SMC Agent v6 — Core SMC Logic (CLASSIC REWRITE)
 """
 import numpy as np
 import pandas as pd
+import copy
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -385,7 +386,6 @@ def analyze(
         bar.imbalance_ok = imb_ratio >= imbalance_threshold and bar.vol_ma > 0
 
         # ── COPY STATE ───────────────────────────────────────────
-        import copy
         bar.ob = copy.deepcopy(ob)
         bar.liq = copy.deepcopy(liq)
         bar.structure = copy.deepcopy(structure)

@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import copy
 from dataclasses import dataclass
 from smc_core import analyze as analyze_smc
 
@@ -263,7 +264,6 @@ def analyze_racer(df: pd.DataFrame, htf_df: pd.DataFrame, config: dict):
         if current_setup.valid and i - current_setup.born_bar > 15:
             current_setup = Setup()
             
-        import copy
         bar.setup = copy.deepcopy(current_setup)
         bars.append(bar)
         
