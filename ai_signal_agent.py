@@ -125,14 +125,13 @@ def evaluate_specific_setup(exchange, symbol, direction, entry, sl, tp, atr):
         return {"confidence": 0.0, "rationale": "No API key"}
 
     try:
-        t = exchange.fetch_ticker(symbol)
         market_data = {
-            "last": _safe_float(t.get("last")),
-            "change_pct": _safe_float(t.get("percentage")),
-            "quote_volume": _safe_float(t.get("quoteVolume")),
+            "last": _safe_float(entry),
+            "change_pct": 0.0,
+            "quote_volume": 0.0,
         }
     except Exception:
-        market_data = {"error": "Could not fetch ticker"}
+        market_data = {"error": "Could not parse entry"}
 
     client = OpenAI(base_url=base_url, api_key=api_key)
 

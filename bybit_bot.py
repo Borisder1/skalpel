@@ -10,7 +10,6 @@ from json import JSONDecodeError
 import pandas as pd
 from datetime import datetime, timezone
 from dotenv import load_dotenv
-
 from racer_core import analyze_racer
 from telegram_notifier import (
     send_telegram_message,
@@ -947,14 +946,36 @@ def run_bot():
 
         cycle_symbols = select_symbols_for_scan(exchange, symbol_window, CONFIG, cycle_index)
 
+        print(f"[{datetime.now()}] ⚡ Асинхронне завантаження OHLCV для {len(cycle_symbols)} пар...")
+        try:
+            from async_scanner import get_market_data_parallel
+            parallel_data = get_market_data_parallel(cycle_symbols, [(TIMEFRAME, 100), ("4h", 50)])
+            data_15m = parallel_data.get(TIMEFRAME, {})
+            data_4h = parallel_data.get("4h", {})
+        except Exception as e:
+            print(f"[{datetime.now()}] ⚠️ Помилка асинхронного завантаження: {e}. Пропускаємо цикл.")
+            time.sleep(10)
+            continue
+
         for symbol in cycle_symbols:
             # Критично для швидкості: не чекаємо кінця циклу, обробляємо підтвердження одразу між парами.
             process_pending_confirmations()
             try:
-                # 1. Завантажуємо 15m і 4h (HTF) дані
-                df = fetch_data(exchange, symbol, TIMEFRAME, limit=100)
-                htf_df = fetch_data(exchange, symbol, "4h", limit=50)
-                if df is None or htf_df is None:
+                # 1. Формуємо DataFrame з асинхронно завантажених даних
+                raw_15m = data_15m.get(symbol)
+                raw_4h = data_4h.get(symbol)
+                
+                if not raw_15m or not raw_4h:
+                    continue
+                    
+                df = pd.DataFrame(raw_15m, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+                
+                htf_df = pd.DataFrame(raw_4h, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                htf_df["timestamp"] = pd.to_datetime(htf_df["timestamp"], unit="ms", utc=True)
+                
+                if len(df) < MIN_CANDLES_REQUIRED or len(htf_df) < MIN_CANDLES_REQUIRED:
+                    print(f"[{datetime.now()}] ⚠️ Пропускаємо {symbol}: мало свічок")
                     continue
                 pairs_with_enough_data += 1
                 cycle_scanned += 1
