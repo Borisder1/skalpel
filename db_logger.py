@@ -6,10 +6,14 @@ from datetime import datetime
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trades_history.db")
 logger = logging.getLogger(__name__)
 
+def get_db_conn():
+    conn = sqlite3.connect(DB_PATH, timeout=15.0)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    return conn
 
 def init_db():
     """Створює таблицю, якщо її не існує."""
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS trades (
@@ -39,7 +43,7 @@ def init_db():
 def log_trade(symbol: str, direction: str, entry: float, sl: float, tp1: float, tp2: float, fib: float, sl_mult: float, order_id: str = None):
     """Записує нову угоду в БД."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         conn.execute(
             """
             INSERT INTO trades (
@@ -54,7 +58,7 @@ def log_trade(symbol: str, direction: str, entry: float, sl: float, tp1: float, 
 
 def get_open_trades():
     """Повертає всі відкриті угоди з бази даних."""
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM trades WHERE status = 'OPEN'")
@@ -63,7 +67,7 @@ def get_open_trades():
 
 def update_trade_status(symbol: str, status: str, pnl: float, order_id: str = None):
     """Оновлює статус (WIN/LOSS/CANCELLED) угоди по order_id або символу."""
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         if order_id:
             conn.execute(
                 """
@@ -91,7 +95,7 @@ def update_trade_status(symbol: str, status: str, pnl: float, order_id: str = No
 
 def get_trade_by_order_id(order_id: str):
     """Повертає інформацію про угоду за її order_id."""
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM trades WHERE order_id = ?", (order_id,))

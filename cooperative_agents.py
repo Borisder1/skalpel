@@ -188,8 +188,10 @@ class DecisionAgent:
         return {}
 
     def save_active_config(self, config: dict):
-        with open(self.config_path, 'w') as f:
+        temp_path = self.config_path + ".tmp"
+        with open(temp_path, 'w') as f:
             json.dump(config, f, indent=4)
+        os.replace(temp_path, self.config_path)
 
     def evaluate_and_update(self, pattern_report: dict, diagnostics_report: dict, proposed_config: dict) -> bool:
         """Оцінює пропозицію оптимізації та оновлює конфігурацію бота при необхідності."""

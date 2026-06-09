@@ -211,9 +211,11 @@ def load_dynamic_config():
                     )
                     # Самолікування: перезаписуємо файл чистим JSON, щоб прибрати помилку назавжди.
                     try:
-                        with open(CONFIG_PATH, 'w') as wf:
+                        temp_path = CONFIG_PATH + ".tmp"
+                        with open(temp_path, 'w') as wf:
                             json.dump(parsed, wf, ensure_ascii=False, indent=4)
                             wf.write("\n")
+                        os.replace(temp_path, CONFIG_PATH)
                         print(f"[{datetime.now()}] 🛠 active_config.json автоматично очищено від зайвих даних.")
                     except Exception as write_error:
                         print(f"[{datetime.now()}] ⚠️ Не вдалося авто-відновити active_config.json: {write_error}")
@@ -684,7 +686,7 @@ def sync_open_trades(exchange):
                     
                 # Fallback за логікою цінових рівнів
                 try:
-                    raw_ohlcv = safe_api_call(exchange.fetch_ohlcv, symbol, "15m", limit=20)
+                    raw_ohlcv = safe_api_call(exchange.fetch_ohlcv, symbol, "1m", limit=300)
                     if raw_ohlcv:
                         ohlcv = pd.DataFrame(raw_ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
                         highs = ohlcv["high"].tolist()
