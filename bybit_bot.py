@@ -1200,9 +1200,9 @@ def run_bot():
         })
         if time.time() - last_health_ping > 7200:
             if diag_pair:
-                adx_line = f"ADX: {diag_block['adx']:.2f} {'<' if diag_block['adx'] < diag_block['adx_t'] else '>='} поріг {diag_block['adx_t']:.2f}"
-                vol_line = f"VOL: {diag_block['vol']:.2f} {'<' if diag_block['vol'] < diag_block['vol_t'] else '>='} поріг {diag_block['vol_t']:.2f}"
-                fvg_line = f"FVG: {diag_block['fvg']:.2f} {'<' if diag_block['fvg'] < diag_block['fvg_t'] else '>='} поріг {diag_block['fvg_t']:.2f}"
+                adx_line = f"ADX: {diag_block['adx']:.2f} {'(менше)' if diag_block['adx'] < diag_block['adx_t'] else '(>=)'} поріг {diag_block['adx_t']:.2f}"
+                vol_line = f"VOL: {diag_block['vol']:.2f} {'(менше)' if diag_block['vol'] < diag_block['vol_t'] else '(>=)'} поріг {diag_block['vol_t']:.2f}"
+                fvg_line = f"FVG: {diag_block['fvg']:.2f} {'(менше)' if diag_block['fvg'] < diag_block['fvg_t'] else '(>=)'} поріг {diag_block['fvg_t']:.2f}"
             else:
                 adx_line = vol_line = fvg_line = "n/a"
                 
