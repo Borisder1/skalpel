@@ -619,40 +619,47 @@ def sync_open_trades(exchange):
             if not symbol:
                 continue
                 
+            status_current = t.get("status")
+            is_virtual = bool(status_current == "VIRTUAL_OPEN")
+
             # 1. Перевіряємо, чи є активна позиція по цьому символу
             symbol_positions = [p for p in positions if p.get("symbol") == symbol]
             side_target = "buy" if direction == "LONG" else "sell"
             has_active_position = False
             
-            for p in symbol_positions:
-                side = str(p.get("side") or p.get("info", {}).get("side", "")).lower()
-                if side in {"buy", "long"} and side_target == "buy":
-                    has_active_position = True
-                elif side in {"sell", "short"} and side_target == "sell":
-                    has_active_position = True
-                    
-            if has_active_position:
-                # Позиція ще відкрита
-                continue
+            if not is_virtual:
+                for p in symbol_positions:
+                    side = str(p.get("side") or p.get("info", {}).get("side", "")).lower()
+                    if side in {"buy", "long"} and side_target == "buy":
+                        has_active_position = True
+                    elif side in {"sell", "short"} and side_target == "sell":
+                        has_active_position = True
+                        
+                if has_active_position:
+                    # Позиція ще відкрита
+                    continue
                 
             # 2. Якщо позиції немає, перевіряємо чи активний ще лімітний ордер на Bybit
             open_orders = get_open_orders(exchange, symbol)
             order_is_active = False
-            if order_id:
-                order_is_active = any(o.get("id") == order_id for o in open_orders)
-            else:
-                order_is_active = has_same_direction_open_order(open_orders, direction)
-                
-            if order_is_active:
-                # Ордер ще чекає у стакані
-                continue
+            if not is_virtual:
+                if order_id:
+                    order_is_active = any(o.get("id") == order_id for o in open_orders)
+                else:
+                    order_is_active = has_same_direction_open_order(open_orders, direction)
+                    
+                if order_is_active:
+                    # Ордер ще чекає у стакані
+                    continue
                 
             # 3. Угоду закрили або скасували
             was_filled = False
             actual_pnl = 0.0
             exit_price = entry_price
             
-            if order_id:
+            if is_virtual:
+                was_filled = True
+            elif order_id:
                 try:
                     order_info = exchange.fetch_order(order_id, symbol)
                     status = order_info.get("status")
@@ -670,30 +677,31 @@ def sync_open_trades(exchange):
                 was_filled = True
                 
             if was_filled:
-                try:
-                    closed_pnl_records = fetch_closed_pnl_bybit(exchange, symbol)
-                    if closed_pnl_records:
-                        latest_pnl = closed_pnl_records[-1]
-                        actual_pnl = float(latest_pnl.get("closedPnl") or 0.0)
-                        exit_price = float(latest_pnl.get("avgExitPrice") or entry_price)
-                        status_outcome = "WIN" if actual_pnl > 0 else "LOSS"
-                        
-                        # Самонавчання для Квантового Ядра
-                        factors_str = t.get("factors_snapshot")
-                        if factors_str:
-                            try:
-                                factors_snap = json.loads(factors_str)
-                                if factors_snap and status_outcome in ("WIN", "LOSS"):
-                                    learn_from_trade(factors_snap, status_outcome, actual_pnl)
-                            except Exception as e_learn:
-                                print(f"[{datetime.now()}] ⚠️ Не вдалося запустити learn_from_trade: {e_learn}")
+                if not is_virtual:
+                    try:
+                        closed_pnl_records = fetch_closed_pnl_bybit(exchange, symbol)
+                        if closed_pnl_records:
+                            latest_pnl = closed_pnl_records[-1]
+                            actual_pnl = float(latest_pnl.get("closedPnl") or 0.0)
+                            exit_price = float(latest_pnl.get("avgExitPrice") or entry_price)
+                            status_outcome = "WIN" if actual_pnl > 0 else "LOSS"
+                            
+                            # Самонавчання для Квантового Ядра
+                            factors_str = t.get("factors_snapshot")
+                            if factors_str:
+                                try:
+                                    factors_snap = json.loads(factors_str)
+                                    if factors_snap and status_outcome in ("WIN", "LOSS"):
+                                        learn_from_trade(factors_snap, status_outcome, actual_pnl)
+                                except Exception as e_learn:
+                                    print(f"[{datetime.now()}] ⚠️ Не вдалося запустити learn_from_trade: {e_learn}")
 
-                        update_trade_status(symbol=symbol, status=status_outcome, pnl=actual_pnl, order_id=order_id)
-                        record_trade(symbol, direction, entry_price, exit_price, actual_pnl)
-                        print(f"[{datetime.now()}] 🎯 Угода {symbol} закрита: {status_outcome} PnL={actual_pnl:.4f} USDT")
-                        continue
-                except Exception as e:
-                    print(f"[{datetime.now()}] ⚠️ Помилка fetch_closed_pnl_bybit для {symbol}: {e}")
+                            update_trade_status(symbol=symbol, status=status_outcome, pnl=actual_pnl, order_id=order_id)
+                            record_trade(symbol, direction, entry_price, exit_price, actual_pnl)
+                            print(f"[{datetime.now()}] 🎯 Угода {symbol} закрита: {status_outcome} PnL={actual_pnl:.4f} USDT")
+                            continue
+                    except Exception as e:
+                        print(f"[{datetime.now()}] ⚠️ Помилка fetch_closed_pnl_bybit для {symbol}: {e}")
                     
                 # Fallback за логікою цінових рівнів
                 try:
@@ -720,14 +728,17 @@ def sync_open_trades(exchange):
                                 reached_sl = True
                                 
                         if reached_tp and not reached_sl:
-                            status_outcome = "WIN"
+                            status_outcome = "VIRTUAL_WIN" if is_virtual else "WIN"
                             exit_price = tp2
                             actual_pnl = abs(tp2 - entry_price)
                         elif reached_sl:
-                            status_outcome = "LOSS"
+                            status_outcome = "VIRTUAL_LOSS" if is_virtual else "LOSS"
                             exit_price = sl
                             actual_pnl = -abs(entry_price - sl)
                         else:
+                            if is_virtual:
+                                # Віртуальна угода ще відкрита
+                                continue
                             status_outcome = "WIN"
                             exit_price = entry_price
                             actual_pnl = 0.0
@@ -737,14 +748,16 @@ def sync_open_trades(exchange):
                         if factors_str:
                             try:
                                 factors_snap = json.loads(factors_str)
-                                if factors_snap and status_outcome in ("WIN", "LOSS"):
-                                    learn_from_trade(factors_snap, status_outcome, actual_pnl)
+                                learned_outcome = "WIN" if "WIN" in status_outcome else "LOSS"
+                                if factors_snap and learned_outcome in ("WIN", "LOSS"):
+                                    learn_from_trade(factors_snap, learned_outcome, actual_pnl)
                             except Exception as e_learn:
                                 print(f"[{datetime.now()}] ⚠️ Не вдалося запустити learn_from_trade (fallback): {e_learn}")
 
                         update_trade_status(symbol=symbol, status=status_outcome, pnl=actual_pnl, order_id=order_id)
                         record_trade(symbol, direction, entry_price, exit_price, actual_pnl)
-                        print(f"[{datetime.now()}] 🎯 Угода {symbol} закрита (fallback): {status_outcome} PnL={actual_pnl:.4f} USDT")
+                        trade_prefix = "🧠 Віртуальна" if is_virtual else "🎯"
+                        print(f"[{datetime.now()}] {trade_prefix} угода {symbol} закрита (fallback): {status_outcome} PnL={actual_pnl:.4f} USDT")
                 except Exception as e_fallback:
                     print(f"[{datetime.now()}] ⚠️ Не вдалося синхронізувати угоду {symbol} через fallback: {e_fallback}")
     except Exception as e_sync:
@@ -786,7 +799,7 @@ def run_bot():
     )
     print(f"[{datetime.now()}] Бот запущений. Доступно {len(all_symbols)} пар на демо рахунку.")
 
-    if require_confirmation and TELEGRAM_BOT_TOKEN:
+    if TELEGRAM_BOT_TOKEN:
         def _tg_callback_loop():
             consecutive_failures = 0
             while True:
@@ -869,6 +882,53 @@ def run_bot():
                         continue
                     positions = get_open_positions(exchange)
                     open_orders = get_open_orders(exchange)
+                    
+                    # Перевіряємо дублікат
+                    has_duplicate = False
+                    symbol_positions = [p for p in positions if p.get("symbol") == symbol]
+                    side_target = "buy" if direction == "LONG" else "sell"
+                    for p in symbol_positions:
+                        side = str(p.get("side") or p.get("info", {}).get("side", "")).lower()
+                        if side in {"buy", "long"} and side_target == "buy":
+                            has_duplicate = True
+                        if side in {"sell", "short"} and side_target == "sell":
+                            has_duplicate = True
+                            
+                    if has_duplicate:
+                        with pending_lock:
+                            pending_signals.pop(sid, None)
+                            pending_keys.discard((symbol, direction))
+                        continue
+                        
+                    # Перевіряємо ліміт активних позицій/ордерів
+                    max_positions = int(CONFIG.get("max_concurrent_positions", 25))
+                    total_active = len(positions) + len(open_orders)
+                    
+                    if total_active >= max_positions:
+                        print(f"[{datetime.now()}] 🧠 Портфель заповнений ({total_active}/{max_positions}). Відкриваємо ВІРТУАЛЬНУ позицію для підтвердженого {symbol}")
+                        log_trade(
+                            symbol=symbol,
+                            direction=direction,
+                            entry=sig["entry"],
+                            sl=sig["sl"],
+                            tp1=sig["tp1"],
+                            tp2=sig["tp2"],
+                            fib=CONFIG.get("fib_level", 0.5),
+                            sl_mult=CONFIG.get("sl_atr_mult", 1.5),
+                            order_id=f"VIRTUAL_{symbol}_{int(time.time())}",
+                            quant_score=sig.get("quant_score"),
+                            factors_snapshot=sig.get("factors_snapshot"),
+                        )
+                        send_telegram_message(
+                            f"🧠 <b>Virtual Position Opened (Confirmed)</b>\n"
+                            f"Монета: <b>{symbol}</b> (<i>{direction}</i>)\n"
+                            f"Вхід: {sig['entry']:.4f} | SL: {sig['sl']:.4f} | TP2: {sig['tp2']:.4f}"
+                        )
+                        with pending_lock:
+                            pending_signals.pop(sid, None)
+                            pending_keys.discard((symbol, direction))
+                        continue
+                        
                     if can_open_position(symbol, direction, positions, open_orders, CONFIG, notify_tg=True):
                         print(f"[{datetime.now()}] 📤 Підтверджений сигнал, відправляємо ордер на DEMO: {symbol} {direction}")
                         order = execute_demo_order(
@@ -1208,8 +1268,49 @@ def run_bot():
                         # Вхід на Демо рахунку Bybit
                         positions = get_open_positions(exchange)
                         open_orders = get_open_orders(exchange)
-                        if not can_open_position(symbol, direction, positions, open_orders, CONFIG):
+                        
+                        # Перевіряємо дублікат
+                        has_duplicate = False
+                        symbol_positions = [p for p in positions if p.get("symbol") == symbol]
+                        side_target = "buy" if direction == "LONG" else "sell"
+                        for p in symbol_positions:
+                            side = str(p.get("side") or p.get("info", {}).get("side", "")).lower()
+                            if side in {"buy", "long"} and side_target == "buy":
+                                has_duplicate = True
+                            if side in {"sell", "short"} and side_target == "sell":
+                                has_duplicate = True
+                                
+                        if has_duplicate:
                             continue
+                            
+                        # Перевіряємо ліміт активних позицій/ордерів
+                        max_positions = int(CONFIG.get("max_concurrent_positions", 25))
+                        total_active = len(positions) + len(open_orders)
+                        
+                        if total_active >= max_positions:
+                            # ВІРТУАЛЬНИЙ вхід
+                            print(f"[{datetime.now()}] 🧠 Портфель заповнений ({total_active}/{max_positions}). Відкриваємо ВІРТУАЛЬНУ позицію для {symbol}")
+                            log_trade(
+                                symbol=symbol,
+                                direction=direction,
+                                entry=setup.entry,
+                                sl=setup.sl,
+                                tp1=setup.tp1,
+                                tp2=setup.tp2,
+                                fib=CONFIG.get("fib_level", 0.5),
+                                sl_mult=CONFIG.get("sl_atr_mult", 1.5),
+                                order_id=f"VIRTUAL_{symbol}_{int(time.time())}",
+                                quant_score=conf,
+                                factors_snapshot=factors_snapshot,
+                            )
+                            send_telegram_message(
+                                f"🧠 <b>Virtual Position Opened</b>\n"
+                                f"Монета: <b>{symbol}</b> ({direction_str})\n"
+                                f"Вхід: {setup.entry:.4f} | SL: {setup.sl:.4f} | TP2: {setup.tp2:.4f}\n"
+                                f"Оцінка: {conf*100:.0f}%"
+                            )
+                            continue
+
                         if CONFIG.get("dry_run", True):
                             print(f"[{datetime.now()}] 🧪 dry_run=true, ордер НЕ відправлено для {symbol}")
                         else:

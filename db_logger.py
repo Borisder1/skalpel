@@ -56,6 +56,7 @@ def log_trade(symbol: str, direction: str, entry: float, sl: float, tp1: float, 
     """Записує нову угоду в БД."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     factors_json = json.dumps(factors_snapshot) if factors_snapshot else None
+    initial_status = "VIRTUAL_OPEN" if order_id and order_id.startswith("VIRTUAL_") else "OPEN"
     with get_db_conn() as conn:
         conn.execute(
             """
@@ -63,30 +64,30 @@ def log_trade(symbol: str, direction: str, entry: float, sl: float, tp1: float, 
                 timestamp, symbol, direction, entry_price, stop_loss,
                 take_profit_1, take_profit_2, fib_level, sl_atr_mult, status, pnl, order_id, quant_score, factors_snapshot
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', 0.0, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, ?, ?)
             """,
-            (timestamp, symbol, direction, entry, sl, tp1, tp2, fib, sl_mult, order_id, quant_score, factors_json),
+            (timestamp, symbol, direction, entry, sl, tp1, tp2, fib, sl_mult, initial_status, order_id, quant_score, factors_json),
         )
 
 
 def get_open_trades():
-    """Повертає всі відкриті угоди з бази даних."""
+    """Повертає всі відкриті (реальні та віртуальні) угоди з бази даних."""
     with get_db_conn() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM trades WHERE status = 'OPEN'")
+        cursor.execute("SELECT * FROM trades WHERE status IN ('OPEN', 'VIRTUAL_OPEN')")
         return [dict(row) for row in cursor.fetchall()]
 
 
 def update_trade_status(symbol: str, status: str, pnl: float, order_id: str = None):
-    """Оновлює статус (WIN/LOSS/CANCELLED) угоди по order_id або символу."""
+    """Оновлює статус угоди по order_id або символу."""
     with get_db_conn() as conn:
         if order_id:
             conn.execute(
                 """
                 UPDATE trades
                 SET status = ?, pnl = ?
-                WHERE order_id = ? AND status = 'OPEN'
+                WHERE order_id = ? AND status IN ('OPEN', 'VIRTUAL_OPEN')
                 """,
                 (status, pnl, order_id),
             )
@@ -97,7 +98,7 @@ def update_trade_status(symbol: str, status: str, pnl: float, order_id: str = No
                 SET status = ?, pnl = ?
                 WHERE id = (
                     SELECT id FROM trades
-                    WHERE symbol = ? AND status = 'OPEN'
+                    WHERE symbol = ? AND status IN ('OPEN', 'VIRTUAL_OPEN')
                     ORDER BY id DESC
                     LIMIT 1
                 )

@@ -11,21 +11,30 @@
 import json
 import os
 import math
+import time
+import requests
 from datetime import datetime
 
 # Файл для збереження оптимізованих ваг
 WEIGHTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quant_weights.json")
 
+# Кеш для макроекономічних показників (DXY, Crude Oil, Gold)
+MACRO_CACHE = {
+    "data": None,
+    "last_fetched": 0.0
+}
+
 # Дефолтні ваги факторів (сума = 1.0)
 DEFAULT_WEIGHTS = {
-    "rr_quality":       0.20,   # Risk:Reward якість
-    "volume_confirm":   0.15,   # Об'єм підтвердження
-    "adx_strength":     0.15,   # ADX сила тренду
-    "fvg_size":         0.10,   # FVG розмір
-    "htf_confluence":   0.15,   # HTF конфлюенція
-    "session_quality":  0.10,   # Якість торгової сесії
-    "smc_structure":    0.10,   # SMC структурна конфлюенція
-    "impulse_quality":  0.05,   # Імпульс свічки
+    "rr_quality":       0.18,   # Risk:Reward якість
+    "volume_confirm":   0.12,   # Об'єм підтвердження
+    "adx_strength":     0.12,   # ADX сила тренду
+    "fvg_size":         0.08,   # FVG розмір
+    "htf_confluence":   0.12,   # HTF конфлюенція
+    "session_quality":  0.08,   # Якість торгової сесії
+    "smc_structure":    0.08,   # SMC структурна конфлюенція
+    "impulse_quality":  0.04,   # Імпульс свічки
+    "macro_confluence": 0.18,   # Макро конфлюенція (DXY, Oil, Gold)
 }
 
 
@@ -162,6 +171,84 @@ def _score_impulse(is_impulse: bool, body_to_atr_ratio: float) -> float:
     return _clamp(0.5 + body_to_atr_ratio * 0.3)
 
 
+# ─── МАКРО-КОНФЛЮЕНЦІЯ (Correlation) ──────────────────────────
+
+def get_macro_context() -> dict:
+    """Отримує макроекономічний контекст з Yahoo Finance із кешуванням на 10 хвилин."""
+    now = time.time()
+    if MACRO_CACHE["data"] and (now - MACRO_CACHE["last_fetched"] < 600):
+        return MACRO_CACHE["data"]
+
+    headers = {"User-Agent": "Mozilla/5.0"}
+    assets = {
+        "DXY": "DX-Y.NYB",
+        "Oil": "CL=F",
+        "Gold": "GC=F"
+    }
+    
+    result_data = {}
+    for name, ticker in assets.items():
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?range=5d&interval=1h"
+        try:
+            r = requests.get(url, headers=headers, timeout=5)
+            data = r.json()
+            res = data.get("chart", {}).get("result")
+            if res:
+                quotes = res[0]["indicators"]["quote"][0]
+                closes = [c for c in quotes.get("close", []) if c is not None]
+                if len(closes) >= 2:
+                    current_price = closes[-1]
+                    sma = sum(closes) / len(closes)
+                    trend = "BULL" if current_price > sma else "BEAR"
+                    result_data[name] = trend
+                else:
+                    result_data[name] = "NEUTRAL"
+            else:
+                result_data[name] = "NEUTRAL"
+        except Exception:
+            result_data[name] = "NEUTRAL"
+            
+    MACRO_CACHE["data"] = result_data
+    MACRO_CACHE["last_fetched"] = now
+    return result_data
+
+
+def _score_macro_confluence(direction: str) -> float:
+    """Оцінює макро-кореляцію (DXY, Oil, Gold) залежно від напрямку."""
+    macro = get_macro_context()
+    dxy = macro.get("DXY", "NEUTRAL")
+    oil = macro.get("Oil", "NEUTRAL")
+    gold = macro.get("Gold", "NEUTRAL")
+    
+    score = 0.0
+    
+    # 1. DXY (вага 40%): Слабкий DXY = Bullish для BTC
+    if direction == "LONG":
+        if dxy == "BEAR": score += 0.4
+        elif dxy == "NEUTRAL": score += 0.2
+    else:
+        if dxy == "BULL": score += 0.4
+        elif dxy == "NEUTRAL": score += 0.2
+        
+    # 2. Нафта (вага 30%): Падіння нафти = дефляційний імпульс (Bullish)
+    if direction == "LONG":
+        if oil == "BEAR": score += 0.3
+        elif oil == "NEUTRAL": score += 0.15
+    else:
+        if oil == "BULL": score += 0.3
+        elif oil == "NEUTRAL": score += 0.15
+        
+    # 3. Золото (вага 30%): Ріст золота = захист від девальвації (Bullish для крипти як цифрового золота)
+    if direction == "LONG":
+        if gold == "BULL": score += 0.3
+        elif gold == "NEUTRAL": score += 0.15
+    else:
+        if gold == "BEAR": score += 0.3
+        elif gold == "NEUTRAL": score += 0.15
+        
+    return score
+
+
 # ─── ГОЛОВНА ФУНКЦІЯ СКОРИНГУ ──────────────────────────────────
 
 def score_setup(
@@ -217,7 +304,7 @@ def score_setup(
     
     body_to_atr = abs(entry - sl) / max(atr, 1e-10) if atr > 0 else 0.5
 
-    # Рахуємо всі 8 факторів
+    # Рахуємо всі 9 факторів
     factors = {
         "rr_quality":       _score_rr_quality(entry, sl, tp1, tp2, direction),
         "volume_confirm":   _score_volume(rel_vol, vol_threshold),
@@ -227,6 +314,7 @@ def score_setup(
         "session_quality":  _score_session(session),
         "smc_structure":    _score_smc_structure(bos_aligned, choch_aligned, ob_active, fvg_naked),
         "impulse_quality":  _score_impulse(is_impulse, body_to_atr),
+        "macro_confluence": _score_macro_confluence(direction),
     }
 
     # Зважена сума
@@ -254,6 +342,7 @@ def score_setup(
         "session_quality": "Сесія",
         "smc_structure": "SMC структура",
         "impulse_quality": "Імпульс",
+        "macro_confluence": "Макро тренд",
     }
     
     strong = ", ".join(f"{factor_names_ua.get(k, k)}={v:.0%}" for k, v in top_factors)
