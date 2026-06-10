@@ -179,6 +179,9 @@ def answer_callback(token, callback_id, text):
     )
 
 
+_USER_STATES = {}  # {chat_id: state_name}
+
+
 def update_config_value(key: str, value) -> bool:
     import json
     config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "active_config.json")
@@ -197,36 +200,73 @@ def update_config_value(key: str, value) -> bool:
     return False
 
 
-def get_current_settings_str() -> str:
+def send_settings_menu(token, chat_id, message_id=None):
     import json
     config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "active_config.json")
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-            return (
-                f"⚙️ *Поточні налаштування SMC Racer*\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"💰 Ризик на угоду: *{config.get('risk_pct')}%*\n"
-                f"🛡 Макс відкритих позицій: *{config.get('max_concurrent_positions')}*\n"
-                f"🛡 Макс активних ордерів: *{config.get('max_active_orders')}*\n"
-                f"🎯 TP1 R:R: *{config.get('tp1_rr')}*\n"
-                f"🎯 TP2 R:R: *{config.get('tp2_rr')}*\n"
-                f"🧠 Оцінка авто-входу: *{config.get('auto_execute_confidence_threshold') * 100:.0f}%*\n"
-                f"🔔 Потрібне підтвердження: *{config.get('require_confirmation')}*\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"💡 _Для зміни параметрів відправте команду:_\n"
-                f"`/set_risk <значення>` (напр. `/set_risk 1.0`)\n"
-                f"`/set_positions <число>` (напр. `/set_positions 25`)\n"
-                f"`/set_orders <число>` (напр. `/set_orders 25`)\n"
-                f"`/set_tp1 <значення>` (напр. `/set_tp1 1.5`)\n"
-                f"`/set_tp2 <значення>` (напр. `/set_tp2 3.0`)\n"
-                f"`/set_auto <значення>` (напр. `/set_auto 0.65`)\n"
-                f"`/set_confirm <true/false>`"
-            )
-        except Exception as e:
-            logger.error("Error reading config: %s", e)
-    return "❌ Не вдалося прочитати файл налаштувань."
+    if not os.path.exists(config_path):
+        return
+        
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except Exception as e:
+        logger.error("Error reading config for menu: %s", e)
+        return
+
+    text = (
+        f"⚙️ *Налаштування SMC Racer*\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 Ризик на угоду: *{config.get('risk_pct')}%*\n"
+        f"🛡 Макс відкритих позицій: *{config.get('max_concurrent_positions')}*\n"
+        f"🛡 Макс активних ордерів: *{config.get('max_active_orders')}*\n"
+        f"🎯 TP1 R:R: *{config.get('tp1_rr')}*\n"
+        f"🎯 TP2 R:R: *{config.get('tp2_rr')}*\n"
+        f"🧠 Поріг авто-входу: *{config.get('auto_execute_confidence_threshold') * 100:.0f}%*\n"
+        f"🔔 Потрібне підтвердження: *{config.get('require_confirmation')}*\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"Оберіть параметр для зміни:"
+    )
+
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {"text": "💰 Ризик на угоду", "callback_data": "menu_risk_pct"},
+                {"text": "🛡 Ліміт позицій", "callback_data": "menu_max_concurrent_positions"}
+            ],
+            [
+                {"text": "🎯 TP1 R:R", "callback_data": "menu_tp1_rr"},
+                {"text": "🎯 TP2 R:R", "callback_data": "menu_tp2_rr"}
+            ],
+            [
+                {"text": "🧠 Поріг авто-входу", "callback_data": "menu_auto_execute_confidence_threshold"},
+                {"text": "🔔 Підтвердження (On/Off)", "callback_data": "menu_toggle_require_confirmation"}
+            ]
+        ]
+    }
+
+    if message_id:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/editMessageText",
+            json={
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": text,
+                "parse_mode": "Markdown",
+                "reply_markup": keyboard
+            },
+            timeout=10
+        )
+    else:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "Markdown",
+                "reply_markup": keyboard
+            },
+            timeout=10
+        )
 
 
 def poll_telegram_callbacks(token, pending_signals):
@@ -240,11 +280,11 @@ def poll_telegram_callbacks(token, pending_signals):
     except Exception as e:
         logger.warning("TG callbacks poll error: %s", _sanitize_secret(e))
         return False
-        
+
     for update in resp.get("result", []):
         _LAST_UPDATE_ID = update["update_id"] + 1
-        
-        # 1. Обробка натискання на інлайн-кнопки
+
+        # 1. Обробка inline кнопок
         callback = update.get("callback_query")
         if callback:
             cb_id = callback.get("id")
@@ -253,6 +293,9 @@ def poll_telegram_callbacks(token, pending_signals):
             if cb_id:
                 _PROCESSED_CALLBACKS.add(cb_id)
             data = callback.get("data", "")
+            chat_id = callback["message"]["chat"]["id"]
+            msg_id = callback["message"]["message_id"]
+
             if data.startswith("confirm_"):
                 signal_id = data.replace("confirm_", "")
                 sig = pending_signals.get(signal_id)
@@ -262,7 +305,7 @@ def poll_telegram_callbacks(token, pending_signals):
                     requests.post(
                         f"https://api.telegram.org/bot{token}/sendMessage",
                         json={
-                            "chat_id": callback["message"]["chat"]["id"],
+                            "chat_id": chat_id,
                             "text": f"✅ Підтверджено: {sig['signal']['direction']} {sig['signal']['symbol']}",
                             "parse_mode": "Markdown",
                         },
@@ -276,13 +319,50 @@ def poll_telegram_callbacks(token, pending_signals):
                 requests.post(
                     f"https://api.telegram.org/bot{token}/sendMessage",
                     json={
-                        "chat_id": callback["message"]["chat"]["id"],
+                        "chat_id": chat_id,
                         "text": f"❌ Скасовано: {signal_id}",
                         "parse_mode": "Markdown",
                     },
                     timeout=10,
                 )
+            elif data == "menu_toggle_require_confirmation":
+                # Завантажуємо поточне, змінюємо на протилежне
+                import json
+                config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "active_config.json")
+                req_conf = False
+                if os.path.exists(config_path):
+                    try:
+                        with open(config_path, "r") as f:
+                            cfg = json.load(f)
+                        req_conf = not cfg.get("require_confirmation", False)
+                        update_config_value("require_confirmation", req_conf)
+                    except Exception:
+                        pass
                 
+                answer_callback(token, callback["id"], f"🔔 Режим підтвердження: {req_conf}")
+                send_settings_menu(token, chat_id, message_id=msg_id)
+            elif data.startswith("menu_"):
+                _USER_STATES[chat_id] = data
+                prompt_messages = {
+                    "menu_risk_pct": "💰 Введіть новий ризик на угоду у відсотках (наприклад: `1.2`):",
+                    "menu_max_concurrent_positions": "🛡 Введіть новий ліміт відкритих позицій (наприклад: `25`):",
+                    "menu_max_active_orders": "🛡 Введіть новий ліміт активних ордерів (наприклад: `25`):",
+                    "menu_tp1_rr": "🎯 Введіть TP1 R:R ціль (наприклад: `1.5`):",
+                    "menu_tp2_rr": "🎯 Введіть TP2 R:R ціль (наприклад: `3.0`):",
+                    "menu_auto_execute_confidence_threshold": "🧠 Введіть поріг автоматичного входу (наприклад, `0.65` для 65%):"
+                }
+                prompt = prompt_messages.get(data, "Введіть нове значення:")
+                requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={
+                        "chat_id": chat_id,
+                        "text": prompt,
+                        "parse_mode": "Markdown"
+                    },
+                    timeout=10
+                )
+                answer_callback(token, callback["id"], "Очікування введення...")
+
         # 2. Обробка текстових повідомлень (налаштування)
         msg = update.get("message")
         if msg:
@@ -290,49 +370,40 @@ def poll_telegram_callbacks(token, pending_signals):
             text = msg.get("text", "").strip()
             if not text:
                 continue
-                
+
             if text == "/settings":
-                settings_text = get_current_settings_str()
-                requests.post(
-                    f"https://api.telegram.org/bot{token}/sendMessage",
-                    json={
-                        "chat_id": chat_id,
-                        "text": settings_text,
-                        "parse_mode": "Markdown"
-                    },
-                    timeout=10
-                )
-            elif text.startswith("/set_"):
-                parts = text.split(" ")
-                if len(parts) == 2:
-                    cmd = parts[0]
-                    val_str = parts[1]
-                    
-                    key_map = {
-                        "/set_risk": ("risk_pct", float),
-                        "/set_positions": ("max_concurrent_positions", int),
-                        "/set_orders": ("max_active_orders", int),
-                        "/set_tp1": ("tp1_rr", float),
-                        "/set_tp2": ("tp2_rr", float),
-                        "/set_auto": ("auto_execute_confidence_threshold", float),
-                        "/set_confirm": ("require_confirmation", lambda x: x.lower() == "true")
-                    }
-                    
-                    if cmd in key_map:
-                        key, cast_func = key_map[cmd]
-                        try:
-                            val = cast_func(val_str)
-                            if update_config_value(key, val):
-                                resp_text = f"✅ Налаштування *{key}* успішно змінено на *{val}*!"
-                            else:
-                                resp_text = "❌ Помилка оновлення файлу конфігурації."
-                        except Exception:
-                            resp_text = f"❌ Невірний формат значення для {cmd}."
-                    else:
-                        resp_text = f"❌ Невідома команда {cmd}."
+                _USER_STATES.pop(chat_id, None)
+                send_settings_menu(token, chat_id)
+            elif chat_id in _USER_STATES:
+                state = _USER_STATES.pop(chat_id)
+                key_map = {
+                    "menu_risk_pct": ("risk_pct", float),
+                    "menu_max_concurrent_positions": ("max_concurrent_positions", int),
+                    "menu_max_active_orders": ("max_active_orders", int),
+                    "menu_tp1_rr": ("tp1_rr", float),
+                    "menu_tp2_rr": ("tp2_rr", float),
+                    "menu_auto_execute_confidence_threshold": ("auto_execute_confidence_threshold", float)
+                }
+                
+                if state in key_map:
+                    key, cast_func = key_map[state]
+                    try:
+                        val = cast_func(text)
+                        # Додаткова валідація
+                        if key == "auto_execute_confidence_threshold" and not (0.0 <= val <= 1.0):
+                            raise ValueError("Поріг має бути між 0.0 та 1.0")
+                        if key == "risk_pct" and not (0.0 < val <= 10.0):
+                            raise ValueError("Ризик має бути в межах від 0.1% до 10%")
+                            
+                        if update_config_value(key, val):
+                            resp_text = f"✅ Параметр *{key}* успішно змінено на *{val}*!"
+                        else:
+                            resp_text = "❌ Помилка оновлення конфігурації."
+                    except Exception as e:
+                        resp_text = f"❌ Невірний формат значення: {e}. Операцію скасовано."
                 else:
-                    resp_text = "❌ Формат команди невірний. Спробуй: `/set_risk 1.0`"
-                    
+                    resp_text = "❌ Невідомий стан редагування."
+
                 requests.post(
                     f"https://api.telegram.org/bot{token}/sendMessage",
                     json={
@@ -342,6 +413,8 @@ def poll_telegram_callbacks(token, pending_signals):
                     },
                     timeout=10
                 )
+                # Повертаємо оновлене меню
+                send_settings_menu(token, chat_id)
 
 
 def send_telegram_message(message: str):
