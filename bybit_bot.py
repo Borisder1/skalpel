@@ -5,6 +5,8 @@ import json
 import ccxt
 import numpy as np
 import requests
+import http.server
+import socketserver
 from ccxt.base.errors import RateLimitExceeded, BadSymbol
 from json import JSONDecodeError
 import pandas as pd
@@ -29,6 +31,36 @@ from ops_dashboard import record_cycle, record_event, build_24h_report
 from logging_config import setup_file_logging
 
 LOG_FILE = setup_file_logging("bot")
+
+def start_health_server():
+    """Фоновий HTTP-сервер для проходження health check на Render."""
+    port = int(os.environ.get("PORT", 10000))
+    
+    class HealthHandler(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self):
+            if self.path in ("/", "/health"):
+                self.send_response(200)
+                self.send_header("Content-type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"OK")
+            else:
+                self.send_response(404)
+                self.end_headers()
+                
+        def log_message(self, format, *args):
+            pass
+            
+    def _run():
+        try:
+            socketserver.TCPServer.allow_reuse_address = True
+            with socketserver.TCPServer(("", port), HealthHandler) as httpd:
+                print(f"[{datetime.now()}] 🏥 Health-сервер запущено на порту {port}")
+                httpd.serve_forever()
+        except Exception as e:
+            print(f"[{datetime.now()}] ⚠️ Не вдалося запустити Health-сервер: {e}")
+            
+    threading.Thread(target=_run, name="health-server", daemon=True).start()
+
 
 load_dotenv()
 
@@ -600,7 +632,7 @@ def cancel_stale_orders(exchange, config: dict):
                     update_trade_status(symbol=symbol, status="CANCELLED", pnl=0.0, order_id=order_id)
 
 
-def sync_open_trades(exchange):
+def sync_open_trades(exchange, config: dict):
     """Синхронізує відкриті угоди в базі даних з їх реальним статусом на Bybit."""
     try:
         open_trades = get_open_trades()
@@ -609,6 +641,16 @@ def sync_open_trades(exchange):
 
         # Отримуємо відкриті позиції на біржі
         positions = get_open_positions(exchange)
+        
+        # Отримуємо вільний баланс один раз для розрахунку віртуальних PnL
+        free_usdt = 50000.0
+        try:
+            balance_info = safe_api_call(exchange.fetch_balance) or {}
+            free_usdt = float(balance_info.get('USDT', {}).get('free', 50000.0))
+            if free_usdt <= 0:
+                free_usdt = 50000.0
+        except Exception:
+            pass
         
         for t in open_trades:
             symbol = t.get("symbol")
@@ -629,12 +671,12 @@ def sync_open_trades(exchange):
             
             if not is_virtual:
                 for p in symbol_positions:
-                    side = str(p.get("side") or p.get("info", {}).get("side", "")).lower()
-                    if side in {"buy", "long"} and side_target == "buy":
-                        has_active_position = True
-                    elif side in {"sell", "short"} and side_target == "sell":
-                        has_active_position = True
-                        
+                     side = str(p.get("side") or p.get("info", {}).get("side", "")).lower()
+                     if side in {"buy", "long"} and side_target == "buy":
+                         has_active_position = True
+                     elif side in {"sell", "short"} and side_target == "sell":
+                         has_active_position = True
+                         
                 if has_active_position:
                     # Позиція ще відкрита
                     continue
@@ -708,6 +750,22 @@ def sync_open_trades(exchange):
                     raw_ohlcv = safe_api_call(exchange.fetch_ohlcv, symbol, "1m", limit=300)
                     if raw_ohlcv:
                         ohlcv = pd.DataFrame(raw_ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                        
+                        # FIXED: Виправлення Lookback Window Bug
+                        try:
+                            trade_time_str = t.get("timestamp")
+                            trade_time_dt = datetime.strptime(trade_time_str, "%Y-%m-%d %H:%M:%S")
+                            age_seconds = (datetime.now() - trade_time_dt).total_seconds()
+                            trade_time_ms = int(datetime.now(timezone.utc).timestamp() * 1000) - int(age_seconds * 1000)
+                            # Залишаємо свічки, що почалися після відкриття угоди з буфером 1хв
+                            ohlcv = ohlcv[ohlcv["timestamp"] >= (trade_time_ms - 60000)]
+                        except Exception as e_time:
+                            print(f"[{datetime.now()}] ⚠️ Не вдалося відфільтрувати свічки по часу для {symbol}: {e_time}")
+                            
+                        if ohlcv.empty:
+                            # Немає свічок, які покривають період після відкриття угоди, чекаємо наступного циклу
+                            continue
+                            
                         highs = ohlcv["high"].tolist()
                         lows = ohlcv["low"].tolist()
                         tp2 = t.get("take_profit_2") or (entry_price * 1.05 if direction == "LONG" else entry_price * 0.95)
@@ -727,14 +785,23 @@ def sync_open_trades(exchange):
                             if max(highs) >= sl:
                                 reached_sl = True
                                 
+                        # Розраховуємо пропорційний об'єм на основі ризику для віртуальних PnL
+                        risk_pct = float(config.get("risk_pct", 1.0))
+                        risk_pct = min(max(risk_pct, 0.1), 1.0)
+                        risk_amount = free_usdt * (risk_pct / 100.0)
+                        price_diff = abs(entry_price - sl)
+                        if price_diff <= 0:
+                            price_diff = entry_price * 0.02
+                        virtual_qty = risk_amount / price_diff
+                        
                         if reached_tp and not reached_sl:
                             status_outcome = "VIRTUAL_WIN" if is_virtual else "WIN"
                             exit_price = tp2
-                            actual_pnl = abs(tp2 - entry_price)
+                            actual_pnl = virtual_qty * abs(tp2 - entry_price)
                         elif reached_sl:
                             status_outcome = "VIRTUAL_LOSS" if is_virtual else "LOSS"
                             exit_price = sl
-                            actual_pnl = -abs(entry_price - sl)
+                            actual_pnl = -virtual_qty * abs(entry_price - sl)
                         else:
                             if is_virtual:
                                 # Віртуальна угода ще відкрита
@@ -764,7 +831,11 @@ def sync_open_trades(exchange):
         print(f"[{datetime.now()}] ⚠️ Помилка у sync_open_trades: {e_sync}")
 
 
+
 def run_bot():
+    # Запускаємо Health-сервер для Render
+    start_health_server()
+    
     # Ініціалізуємо БД
     init_db()
     
@@ -991,7 +1062,7 @@ def run_bot():
 
         process_pending_confirmations()
         # Синхронізація угод та скасування застарілих ордерів
-        sync_open_trades(exchange)
+        sync_open_trades(exchange, CONFIG)
         cancel_stale_orders(exchange, CONFIG)
 
         cycle_scanned = 0
