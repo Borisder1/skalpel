@@ -40,6 +40,15 @@ def send_signal(token, chat_id, signal):
     atr_str = f"{atr:.6f}" if atr < 0.001 else f"{atr:.4f}"
     rr = signal.get("rr", 1.5)
 
+    quant_score = signal.get("quant_score") or signal.get("ai_confidence")
+    quant_line = ""
+    if quant_score is not None:
+        quant_line = f"🧠 Оцінка: *{quant_score * 100:.0f}%*\n"
+        rat = signal.get("ai_rationale")
+        if rat:
+            clean_rat = str(rat).replace("*", "").replace("_", "").replace("`", "")
+            quant_line += f"📝 Деталі: _{clean_rat}_\n"
+
     text = (
         f"⚡ *{emoji} | {symbol}*\n"
         f"━━━━━━━━━━━━━━━\n"
@@ -49,6 +58,7 @@ def send_signal(token, chat_id, signal):
         f"🎯 TP2:  *{fp(signal['tp2'])}*\n"
         f"━━━━━━━━━━━━━━━\n"
         f"📊 R:R = 1:{rr} | ATR={atr_str}\n"
+        f"{quant_line}"
         f"🕐 {datetime.now().strftime('%H:%M %d.%m')}"
     )
 
@@ -127,6 +137,15 @@ def send_signal_with_buttons(token, chat_id, signal):
 
     atr = float(signal.get("atr", 0) or 0)
     atr_str = f"{atr:.6f}" if atr < 0.001 else f"{atr:.4f}"
+    quant_score = signal.get("quant_score") or signal.get("ai_confidence")
+    quant_line = ""
+    if quant_score is not None:
+        quant_line = f"🧠 Оцінка: *{quant_score * 100:.0f}%*\n"
+        rat = signal.get("ai_rationale")
+        if rat:
+            clean_rat = str(rat).replace("*", "").replace("_", "").replace("`", "")
+            quant_line += f"📝 Деталі: _{clean_rat}_\n"
+
     text = (
         f"⚡ *{emoji} | {symbol}*\n"
         f"━━━━━━━━━━━━━━━\n"
@@ -136,6 +155,7 @@ def send_signal_with_buttons(token, chat_id, signal):
         f"🎯 TP2: *{fp(signal['tp2'])}*\n"
         f"━━━━━━━━━━━━━━━\n"
         f"📊 ATR={atr_str}\n"
+        f"{quant_line}"
         f"Підтвердити відкриття позиції?"
     )
     keyboard = {

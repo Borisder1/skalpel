@@ -21,7 +21,8 @@ from telegram_notifier import (
     TELEGRAM_CHAT_ID,
 )
 from db_logger import init_db, log_trade, update_trade_status, get_open_trades, get_trade_by_order_id
-from ai_signal_agent import generate_ai_signal, evaluate_specific_setup
+from ai_signal_agent import generate_ai_signal
+from quant_engine import score_setup, learn_from_trade
 from adaptive_filters import AdaptiveFilterManager
 from pnl_tracker import record_trade, get_summary
 from ops_dashboard import record_cycle, record_event, build_24h_report
@@ -677,6 +678,16 @@ def sync_open_trades(exchange):
                         exit_price = float(latest_pnl.get("avgExitPrice") or entry_price)
                         status_outcome = "WIN" if actual_pnl > 0 else "LOSS"
                         
+                        # Самонавчання для Квантового Ядра
+                        factors_str = t.get("factors_snapshot")
+                        if factors_str:
+                            try:
+                                factors_snap = json.loads(factors_str)
+                                if factors_snap and status_outcome in ("WIN", "LOSS"):
+                                    learn_from_trade(factors_snap, status_outcome, actual_pnl)
+                            except Exception as e_learn:
+                                print(f"[{datetime.now()}] ⚠️ Не вдалося запустити learn_from_trade: {e_learn}")
+
                         update_trade_status(symbol=symbol, status=status_outcome, pnl=actual_pnl, order_id=order_id)
                         record_trade(symbol, direction, entry_price, exit_price, actual_pnl)
                         print(f"[{datetime.now()}] 🎯 Угода {symbol} закрита: {status_outcome} PnL={actual_pnl:.4f} USDT")
@@ -721,6 +732,16 @@ def sync_open_trades(exchange):
                             exit_price = entry_price
                             actual_pnl = 0.0
                             
+                        # Самонавчання для Квантового Ядра
+                        factors_str = t.get("factors_snapshot")
+                        if factors_str:
+                            try:
+                                factors_snap = json.loads(factors_str)
+                                if factors_snap and status_outcome in ("WIN", "LOSS"):
+                                    learn_from_trade(factors_snap, status_outcome, actual_pnl)
+                            except Exception as e_learn:
+                                print(f"[{datetime.now()}] ⚠️ Не вдалося запустити learn_from_trade (fallback): {e_learn}")
+
                         update_trade_status(symbol=symbol, status=status_outcome, pnl=actual_pnl, order_id=order_id)
                         record_trade(symbol, direction, entry_price, exit_price, actual_pnl)
                         print(f"[{datetime.now()}] 🎯 Угода {symbol} закрита (fallback): {status_outcome} PnL={actual_pnl:.4f} USDT")
@@ -873,6 +894,8 @@ def run_bot():
                                 fib=CONFIG.get("fib_level", 0.5),
                                 sl_mult=CONFIG.get("sl_atr_mult", 1.5),
                                 order_id=order.get("id"),
+                                quant_score=sig.get("quant_score"),
+                                factors_snapshot=sig.get("factors_snapshot"),
                             )
                         if order and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
                             qty_for_tg = order.get("amount") or order.get("qty") or order.get("_bot_amount") or sig.get("qty") or "N/A"
@@ -1084,28 +1107,68 @@ def run_bot():
                             "atr": getattr(last_state, "atr", 0),
                         }
                         
-                        # --- AI Confidence Routing ---
-                        print(f"[{datetime.now()}] 🤖 Оцінка AI для {symbol}...")
-                        ai_eval = evaluate_specific_setup(
-                            exchange=exchange,
-                            symbol=symbol,
-                            direction=direction,
+                        # --- Квантове Оцінювання Сетапу (Quant Scoring Engine) ---
+                        print(f"[{datetime.now()}] 🤖 Квантове оцінювання для {symbol}...")
+                        
+                        # Отримуємо додаткові дані для скорингу
+                        adx_v = float(getattr(last_state, "adx", 0.0) or 0.0)
+                        adx_t = float(getattr(last_state, "adx_threshold", CONFIG.get("adx_min", 12)))
+                        vol_v = float(getattr(last_state, "rel_vol", 0.0) or 0.0)
+                        vol_t = float(CONFIG.get("vol_multiplier_min", CONFIG.get("vol_mult", 1.0)))
+                        born_idx = last_state.setup.born_bar
+                        birth_bar = states[born_idx] if 0 <= born_idx < len(states) else last_state
+                        fvg_v = float(getattr(birth_bar, "fvg_size_atr", 0.0) or 0.0)
+                        fvg_t = float(CONFIG.get("fvg_min_size", 0.08))
+                        atr_v = float(getattr(last_state, "atr", 0.0) or 0.0)
+                        
+                        is_htf_bullish = bool(getattr(last_state, "is_htf_bullish", False))
+                        is_htf_bearish = bool(getattr(last_state, "is_htf_bearish", False))
+                        session_v = str(getattr(last_state, "session", "Off"))
+                        bos_bull_v = bool(getattr(last_state, "bos_bull", False))
+                        bos_bear_v = bool(getattr(last_state, "bos_bear", False))
+                        choch_bull_v = bool(getattr(last_state, "choch_bull", False))
+                        choch_bear_v = bool(getattr(last_state, "choch_bear", False))
+                        ob_active_v = bool(getattr(last_state, "ob_active", False))
+                        bull_fvg_v = bool(getattr(last_state, "bull_fvg", False))
+                        bear_fvg_v = bool(getattr(last_state, "bear_fvg", False))
+                        is_impulse_bull_v = bool(getattr(last_state, "is_impulse_bull", False))
+                        is_impulse_bear_v = bool(getattr(last_state, "is_impulse_bear", False))
+
+                        quant_res = score_setup(
                             entry=setup.entry,
                             sl=setup.sl,
-                            tp=setup.tp2,
-                            atr=signal_payload["atr"]
+                            tp1=setup.tp1,
+                            tp2=setup.tp2,
+                            direction=direction,
+                            adx=adx_v,
+                            adx_threshold=adx_t,
+                            rel_vol=vol_v,
+                            vol_threshold=vol_t,
+                            fvg_size_atr=fvg_v,
+                            fvg_min=fvg_t,
+                            atr=atr_v,
+                            is_htf_bullish=is_htf_bullish,
+                            is_htf_bearish=is_htf_bearish,
+                            session=session_v,
+                            bos_bull=bos_bull_v,
+                            bos_bear=bos_bear_v,
+                            choch_bull=choch_bull_v,
+                            choch_bear=choch_bear_v,
+                            ob_active=ob_active_v,
+                            bull_fvg=bull_fvg_v,
+                            bear_fvg=bear_fvg_v,
+                            is_impulse_bull=is_impulse_bull_v,
+                            is_impulse_bear=is_impulse_bear_v,
+                            symbol=symbol,
                         )
-                        conf = ai_eval.get("confidence", 0.0)
-                        rationale = ai_eval.get("rationale", "")
-                        auto_thresh = float(CONFIG.get("auto_execute_confidence_threshold", 0.70))
                         
-                        # Якщо AI недоступний (timeout/error), ставимо 0.5 щоб сигнал
-                        # пішов на ручне підтвердження в Telegram, а не зник безслідно
-                        if conf == 0.0 and ("Timeout" in rationale or "timed out" in rationale or "Error" in rationale or "empty" in rationale):
-                            conf = 0.5
-                            rationale = f"⚠️ AI недоступний — сигнал потребує ручної перевірки. ({rationale})"
-                            print(f"[{datetime.now()}] ⚠️ AI timeout для {symbol}, встановлено conf=0.5 для ручного підтвердження")
+                        conf = quant_res["score"]
+                        rationale = quant_res["rationale"]
+                        factors_snapshot = quant_res["factors"]
+                        auto_thresh = float(CONFIG.get("auto_execute_confidence_threshold", 0.65))
                         
+                        signal_payload["quant_score"] = conf
+                        signal_payload["factors_snapshot"] = factors_snapshot
                         signal_payload["ai_confidence"] = conf
                         signal_payload["ai_rationale"] = rationale
                         
@@ -1114,7 +1177,7 @@ def run_bot():
                         if is_auto_execute and TELEGRAM_BOT_TOKEN:
                             safe_rationale = str(rationale).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                             send_telegram_message(
-                                f"⚡ <b>AI Auto-Execute ({conf*100:.0f}%)</b>\n"
+                                f"⚡ <b>Quant Auto-Execute ({conf*100:.0f}%)</b>\n"
                                 f"<b>{symbol}</b> {direction_str}\n"
                                 f"<i>{safe_rationale}</i>"
                             )
@@ -1173,6 +1236,8 @@ def run_bot():
                                     fib=CONFIG.get("fib_level", 0.5),
                                     sl_mult=CONFIG.get("sl_atr_mult", 1.5),
                                     order_id=order.get("id"),
+                                    quant_score=conf,
+                                    factors_snapshot=factors_snapshot,
                                 )
                             if order and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
                                 send_position_opened(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, {
