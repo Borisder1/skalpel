@@ -1099,16 +1099,24 @@ def run_bot():
                         rationale = ai_eval.get("rationale", "")
                         auto_thresh = float(CONFIG.get("auto_execute_confidence_threshold", 0.70))
                         
+                        # Якщо AI недоступний (timeout/error), ставимо 0.5 щоб сигнал
+                        # пішов на ручне підтвердження в Telegram, а не зник безслідно
+                        if conf == 0.0 and ("Timeout" in rationale or "timed out" in rationale or "Error" in rationale or "empty" in rationale):
+                            conf = 0.5
+                            rationale = f"⚠️ AI недоступний — сигнал потребує ручної перевірки. ({rationale})"
+                            print(f"[{datetime.now()}] ⚠️ AI timeout для {symbol}, встановлено conf=0.5 для ручного підтвердження")
+                        
                         signal_payload["ai_confidence"] = conf
                         signal_payload["ai_rationale"] = rationale
                         
                         is_auto_execute = conf >= auto_thresh
                         
                         if is_auto_execute and TELEGRAM_BOT_TOKEN:
+                            safe_rationale = str(rationale).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                             send_telegram_message(
                                 f"⚡ <b>AI Auto-Execute ({conf*100:.0f}%)</b>\n"
                                 f"<b>{symbol}</b> {direction_str}\n"
-                                f"<i>{rationale}</i>"
+                                f"<i>{safe_rationale}</i>"
                             )
                         
                         # Сповіщення в Telegram
@@ -1252,9 +1260,9 @@ def run_bot():
         })
         if time.time() - last_health_ping > 7200:
             if diag_pair:
-                adx_line = f"ADX: {diag_block['adx']:.2f} {'(менше)' if diag_block['adx'] < diag_block['adx_t'] else '(>=)'} поріг {diag_block['adx_t']:.2f}"
-                vol_line = f"VOL: {diag_block['vol']:.2f} {'(менше)' if diag_block['vol'] < diag_block['vol_t'] else '(>=)'} поріг {diag_block['vol_t']:.2f}"
-                fvg_line = f"FVG: {diag_block['fvg']:.2f} {'(менше)' if diag_block['fvg'] < diag_block['fvg_t'] else '(>=)'} поріг {diag_block['fvg_t']:.2f}"
+                adx_line = f"ADX: {diag_block['adx']:.2f} {'❌ менше' if diag_block['adx'] < diag_block['adx_t'] else '✅ ок'} поріг {diag_block['adx_t']:.2f}"
+                vol_line = f"VOL: {diag_block['vol']:.2f} {'❌ менше' if diag_block['vol'] < diag_block['vol_t'] else '✅ ок'} поріг {diag_block['vol_t']:.2f}"
+                fvg_line = f"FVG: {diag_block['fvg']:.2f} {'❌ менше' if diag_block['fvg'] < diag_block['fvg_t'] else '✅ ок'} поріг {diag_block['fvg_t']:.2f}"
             else:
                 adx_line = vol_line = fvg_line = "n/a"
                 

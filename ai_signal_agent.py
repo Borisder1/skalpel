@@ -153,7 +153,7 @@ def evaluate_specific_setup(exchange, symbol, direction, entry, sl, tp, atr):
         "time": str(datetime.now(timezone.utc))
     }
 
-    def call_ai_api_with_retry(max_retries=3):
+    def call_ai_api_with_retry(max_retries=2):
         for attempt in range(max_retries):
             try:
                 return client.chat.completions.create(
@@ -165,12 +165,19 @@ def evaluate_specific_setup(exchange, symbol, direction, entry, sl, tp, atr):
                     temperature=0.1,
                     top_p=0.9,
                     max_tokens=256,
-                    timeout=10.0,
+                    timeout=5.0,
                 )
             except Exception as e:
-                if "429" in str(e):
+                err_str = str(e)
+                if "429" in err_str:
                     time.sleep(2)
+                elif "timed out" in err_str.lower() or "timeout" in err_str.lower():
+                    print(f"[AI Signal Agent] Timeout (спроба {attempt+1}/{max_retries}): {symbol}")
+                    if attempt >= max_retries - 1:
+                        return None
+                    time.sleep(1)
                 else:
+                    print(f"[AI Signal Agent] AI API помилка: {err_str}")
                     return None
         return None
 

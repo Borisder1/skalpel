@@ -224,7 +224,20 @@ def send_telegram_message(message: str):
             timeout=10
         )
         if response.status_code != 200:
-            print(f"⚠️ Помилка відправки в ТГ: {response.text}")
+            # Fallback: якщо HTML не парситься — відправляємо без форматування
+            resp_json = response.json() if response.text else {}
+            if "can't parse entities" in str(resp_json.get("description", "")):
+                import html as html_mod
+                clean_msg = re.sub(r"<[^>]+>", "", message)  # strip all HTML tags
+                response = requests.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                    json={"chat_id": TELEGRAM_CHAT_ID, "text": clean_msg},
+                    timeout=10
+                )
+                if response.status_code != 200:
+                    print(f"⚠️ Помилка відправки в ТГ (fallback): {response.text}")
+            else:
+                print(f"⚠️ Помилка відправки в ТГ: {response.text}")
     except Exception as e:
         print(f"⚠️ Помилка мережі при відправці в ТГ: {_sanitize_secret(e)}")
 
