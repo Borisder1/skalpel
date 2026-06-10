@@ -551,11 +551,19 @@ def can_open_position(symbol: str, direction: str, open_positions: list, open_or
                 send_telegram_message(msg)
             return False
             
-    # 2. Check global portfolio max concurrent positions + active limit orders limit
-    max_positions = int(config.get("max_concurrent_positions", 5))
-    total_active = len(open_positions) + len(open_orders)
-    if total_active >= max_positions:
-        msg = f"⛔ Досягнуто ліміт активних позицій/ордерів портфеля ({total_active}/{max_positions}) — пропускаємо {symbol}"
+    # 2. Check global portfolio max concurrent positions and active limit orders limits separately
+    max_positions = int(config.get("max_concurrent_positions", 15))
+    max_orders = int(config.get("max_active_orders", 15))
+    
+    if len(open_positions) >= max_positions:
+        msg = f"⛔ Досягнуто ліміт відкритих позицій портфеля ({len(open_positions)}/{max_positions}) — пропускаємо {symbol}"
+        print(f"[{datetime.now()}] {msg}")
+        if notify_tg:
+            send_telegram_message(msg)
+        return False
+        
+    if len(open_orders) >= max_orders:
+        msg = f"⛔ Досягнуто ліміт активних ордерів портфеля ({len(open_orders)}/{max_orders}) — пропускаємо {symbol}"
         print(f"[{datetime.now()}] {msg}")
         if notify_tg:
             send_telegram_message(msg)
@@ -971,12 +979,12 @@ def run_bot():
                             pending_keys.discard((symbol, direction))
                         continue
                         
-                    # Перевіряємо ліміт активних позицій/ордерів
-                    max_positions = int(CONFIG.get("max_concurrent_positions", 25))
-                    total_active = len(positions) + len(open_orders)
+                    # Перевіряємо ліміт активних позицій та ордерів окремо
+                    max_positions = int(CONFIG.get("max_concurrent_positions", 15))
+                    max_orders = int(CONFIG.get("max_active_orders", 15))
                     
-                    if total_active >= max_positions:
-                        print(f"[{datetime.now()}] 🧠 Портфель заповнений ({total_active}/{max_positions}). Відкриваємо ВІРТУАЛЬНУ позицію для підтвердженого {symbol}")
+                    if len(positions) >= max_positions or len(open_orders) >= max_orders:
+                        print(f"[{datetime.now()}] 🧠 Портфель заповнений (позицій: {len(positions)}/{max_positions}, ордерів: {len(open_orders)}/{max_orders}). Відкриваємо ВІРТУАЛЬНУ позицію для підтвердженого {symbol}")
                         log_trade(
                             symbol=symbol,
                             direction=direction,
@@ -1354,13 +1362,13 @@ def run_bot():
                         if has_duplicate:
                             continue
                             
-                        # Перевіряємо ліміт активних позицій/ордерів
-                        max_positions = int(CONFIG.get("max_concurrent_positions", 25))
-                        total_active = len(positions) + len(open_orders)
+                        # Перевіряємо ліміт активних позицій та ордерів окремо
+                        max_positions = int(CONFIG.get("max_concurrent_positions", 15))
+                        max_orders = int(CONFIG.get("max_active_orders", 15))
                         
-                        if total_active >= max_positions:
+                        if len(positions) >= max_positions or len(open_orders) >= max_orders:
                             # ВІРТУАЛЬНИЙ вхід
-                            print(f"[{datetime.now()}] 🧠 Портфель заповнений ({total_active}/{max_positions}). Відкриваємо ВІРТУАЛЬНУ позицію для {symbol}")
+                            print(f"[{datetime.now()}] 🧠 Портфель заповнений (позицій: {len(positions)}/{max_positions}, ордерів: {len(open_orders)}/{max_orders}). Відкриваємо ВІРТУАЛЬНУ позицію для {symbol}")
                             log_trade(
                                 symbol=symbol,
                                 direction=direction,
