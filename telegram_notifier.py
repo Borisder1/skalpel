@@ -268,8 +268,36 @@ def send_settings_menu(token, chat_id, message_id=None):
             timeout=10
         )
 
-
-def poll_telegram_callbacks(token, pending_signals):
+def send_main_menu(token, chat_id, message_id=None):
+    text = (
+        f"🤖 *SMC Racer Dashboard*\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"Оберіть дію:"
+    )
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {"text": "📊 Статистика та PnL", "callback_data": "menu_main_stats"},
+                {"text": "🟢 Активні Угоди", "callback_data": "menu_main_trades"}
+            ],
+            [
+                {"text": "⚙️ Налаштування", "callback_data": "menu_main_settings"},
+                {"text": "🧠 Звіт AI-Ядра", "callback_data": "menu_main_ai_report"}
+            ]
+        ]
+    }
+    if message_id:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/editMessageText",
+            json={"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "Markdown", "reply_markup": keyboard},
+            timeout=10
+        )
+    else:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "reply_markup": keyboard},
+            timeout=10
+        )
     global _LAST_UPDATE_ID
     try:
         resp = requests.get(
@@ -341,6 +369,49 @@ def poll_telegram_callbacks(token, pending_signals):
                 
                 answer_callback(token, callback["id"], f"🔔 Режим підтвердження: {req_conf}")
                 send_settings_menu(token, chat_id, message_id=msg_id)
+            elif data == "menu_main_settings":
+                send_settings_menu(token, chat_id, message_id=msg_id)
+            elif data == "menu_main_stats":
+                answer_callback(token, callback["id"], "Оновлюю статистику...")
+                import pnl_tracker
+                summ = pnl_tracker.get_summary()
+                text = (
+                    f"📊 *Статистика*\n"
+                    f"Всього угод: {summ['total_trades']}\n"
+                    f"Вінрейт: {summ['win_rate']:.1f}%\n"
+                    f"Прибуток: {summ['total_pnl']:.2f} USDT\n"
+                    f"Найкраща угода: {summ['best_trade']:.2f} USDT"
+                )
+                requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+                    timeout=10
+                )
+            elif data == "menu_main_trades":
+                answer_callback(token, callback["id"], "Завантажую...")
+                import db_logger
+                trades = db_logger.get_open_trades()
+                text = f"🟢 *Активні угоди ({len(trades)}):*\n"
+                for t in trades:
+                    text += f"• {t['symbol']} | {t['direction']} | {t['status']}\n"
+                requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+                    timeout=10
+                )
+            elif data == "menu_main_ai_report":
+                answer_callback(token, callback["id"], "Формую AI-Звіт...")
+                import quant_engine
+                quant_engine.optimize_weights_from_history(limit=50) # run an ad-hoc mini optimization
+                weights = quant_engine._load_weights()
+                text = f"🧠 *Ваги AI-Ядра:*\n"
+                for k, v in weights.items():
+                    text += f"• {k}: {v:.2f}\n"
+                requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+                    timeout=10
+                )
             elif data.startswith("menu_"):
                 _USER_STATES[chat_id] = data
                 prompt_messages = {
@@ -371,7 +442,10 @@ def poll_telegram_callbacks(token, pending_signals):
             if not text:
                 continue
 
-            if text == "/settings":
+            if text in ("/menu", "/start"):
+                _USER_STATES.pop(chat_id, None)
+                send_main_menu(token, chat_id)
+            elif text == "/settings":
                 _USER_STATES.pop(chat_id, None)
                 send_settings_menu(token, chat_id)
             elif chat_id in _USER_STATES:

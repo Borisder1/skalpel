@@ -129,6 +129,17 @@ def safe_api_call(fn, *args, retries=3, base_sleep=1.0, **kwargs):
             time.sleep(base_sleep * attempt)
     return None
 
+def calculate_kelly_risk(base_risk_pct: float, quant_score: float) -> float:
+    """Розраховує ризик за спрощеним критерієм Келлі на основі квантової оцінки."""
+    score = float(quant_score or 0.65)
+    # Якщо сигнал дуже слабкий, ріжемо ризик навпіл
+    if score < 0.5:
+        return base_risk_pct * 0.5
+    # Множник від 0.8 до 2.5 (експоненційний ріст при високій впевненості)
+    multiplier = (score / 0.65) ** 2
+    # Hard Cap: Келлі не може перевищувати базовий ризик більше ніж у 2.5 рази або 2.0% абсолютно
+    kelly_risk = base_risk_pct * multiplier
+    return min(max(kelly_risk, 0.1), 2.0)
 
 def extract_usdt_equity(balance: dict, fallback: float = 10000.0) -> float:
     """Return account equity/total balance, not free margin.
@@ -657,6 +668,8 @@ def set_bybit_position_sl(exchange, symbol, direction, new_sl):
         return None
 
 
+import concurrent.futures
+
 def sync_open_trades(exchange, config: dict):
     """Синхронізує відкриті угоди в базі даних з їх реальним статусом на Bybit."""
     try:
@@ -676,15 +689,15 @@ def sync_open_trades(exchange, config: dict):
                 free_usdt = 50000.0
         except Exception:
             pass
-        
-        for t in open_trades:
+            
+        def process_trade(t):
             symbol = t.get("symbol")
             direction = t.get("direction")
             order_id = t.get("order_id")
             entry_price = t.get("entry_price")
             
             if not symbol:
-                continue
+                return
                 
             status_current = t.get("status")
             is_virtual = bool(status_current == "VIRTUAL_OPEN")
@@ -703,7 +716,7 @@ def sync_open_trades(exchange, config: dict):
                             f"Монета: <b>{symbol}</b> ({direction})\n"
                             f"Віртуальну угоду скасовано після 48 годин очікування."
                         )
-                        continue
+                        return
                 except Exception as e_timeout:
                     print(f"[{datetime.now()}] ⚠️ Помилка перевірки таймауту для {symbol}: {e_timeout}")
 
@@ -774,7 +787,7 @@ def sync_open_trades(exchange, config: dict):
                          
                 if has_active_position:
                     # Позиція ще відкрита
-                    continue
+                    return
                 
             # 2. Якщо позиції немає, перевіряємо чи активний ще лімітний ордер на Bybit
             open_orders = get_open_orders(exchange, symbol)
@@ -787,7 +800,7 @@ def sync_open_trades(exchange, config: dict):
                     
                 if order_is_active:
                     # Ордер ще чекає у стакані
-                    continue
+                    return
                 
             # 3. Угоду закрили або скасували
             was_filled = False
@@ -803,7 +816,7 @@ def sync_open_trades(exchange, config: dict):
                     if status == "canceled" or status == "rejected":
                         print(f"[{datetime.now()}] ℹ️ Ордер {order_id} ({symbol}) скасовано.")
                         update_trade_status(symbol=symbol, status="CANCELLED", pnl=0.0, order_id=order_id)
-                        continue
+                        return
                     elif status == "closed":
                         was_filled = True
                 except Exception as e:
@@ -834,9 +847,8 @@ def sync_open_trades(exchange, config: dict):
                                     print(f"[{datetime.now()}] ⚠️ Не вдалося запустити learn_from_trade: {e_learn}")
 
                             update_trade_status(symbol=symbol, status=status_outcome, pnl=actual_pnl, order_id=order_id)
-                            record_trade(symbol, direction, entry_price, exit_price, actual_pnl)
                             print(f"[{datetime.now()}] 🎯 Угода {symbol} закрита: {status_outcome} PnL={actual_pnl:.4f} USDT")
-                            continue
+                            return
                     except Exception as e:
                         print(f"[{datetime.now()}] ⚠️ Помилка fetch_closed_pnl_bybit для {symbol}: {e}")
                     
@@ -859,7 +871,7 @@ def sync_open_trades(exchange, config: dict):
                             
                         if ohlcv.empty:
                             # Немає свічок, які покривають період після відкриття угоди, чекаємо наступного циклу
-                            continue
+                            return
                             
                         tp1 = t.get("take_profit_1") or (entry_price * 1.02 if direction == "LONG" else entry_price * 0.98)
                         tp2 = t.get("take_profit_2") or (entry_price * 1.05 if direction == "LONG" else entry_price * 0.95)
@@ -940,7 +952,7 @@ def sync_open_trades(exchange, config: dict):
                         else:
                             if is_virtual:
                                 # Віртуальна угода ще відкрита
-                                continue
+                                return
                             status_outcome = "WIN"
                             exit_price = entry_price
                             actual_pnl = 0.0
@@ -1145,7 +1157,7 @@ def run_bot():
                             sl=sig["sl"],
                             tp1=sig["tp1"],
                             tp2=sig["tp2"],
-                            risk_pct=CONFIG["risk_pct"],
+                            risk_pct=calculate_kelly_risk(float(CONFIG["risk_pct"]), sig.get("quant_score", 0.65)),
                             leverage=CONFIG.get("leverage", 3.0),
                             max_position_notional_pct=CONFIG.get("max_position_notional_pct", 30.0),
                         )
@@ -1528,7 +1540,7 @@ def run_bot():
                                 sl=setup.sl,
                                 tp1=setup.tp1,
                                 tp2=setup.tp2,
-                                risk_pct=CONFIG["risk_pct"],
+                                risk_pct=calculate_kelly_risk(float(CONFIG["risk_pct"]), conf),
                                 leverage=CONFIG.get("leverage", 3.0),
                                 max_position_notional_pct=CONFIG.get("max_position_notional_pct", 30.0),
                             )

@@ -418,6 +418,79 @@ def learn_from_trade(factors_snapshot: dict, outcome: str, pnl: float):
     _save_weights(weights, stats)
     print(f"[QuantEngine] 🧠 Навчання: {outcome} PnL={pnl:+.2f} | Оновлено ваги ({stats['total_learned']} угод)")
 
+def optimize_weights_from_history(limit: int = 500):
+    """
+    Batch optimization of weights using historical trades.
+    """
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trades_history.db")
+    if not os.path.exists(db_path):
+        print("[QuantEngine] ❌ БД не знайдено для оптимізації.")
+        return
+        
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT pnl, factors_snapshot 
+        FROM trades 
+        WHERE status IN ('CLOSED', 'VIRTUAL_CLOSED')
+          AND factors_snapshot IS NOT NULL
+        ORDER BY id DESC LIMIT ?
+    """, (limit,))
+    
+    trades = cursor.fetchall()
+    conn.close()
+    
+    if not trades:
+        print("[QuantEngine] ⚠️ Немає історії для оптимізації.")
+        return
+        
+    weights = _load_weights()
+    lr = 0.01
+    
+    wins = 0
+    losses = 0
+    
+    for row in trades:
+        try:
+            pnl = float(row['pnl'])
+            factors = json.loads(row['factors_snapshot'])
+            if not factors:
+                continue
+                
+            outcome = "WIN" if pnl > 0 else "LOSS"
+            if outcome == "WIN": wins += 1
+            else: losses += 1
+            
+            for f_name, f_score in factors.items():
+                if f_name not in weights: continue
+                if outcome == "WIN":
+                    if f_score > 0.6: weights[f_name] += lr * f_score
+                    elif f_score < 0.3: weights[f_name] -= lr * 0.5
+                else:
+                    if f_score > 0.6: weights[f_name] -= lr * 0.3
+                    elif f_score < 0.3: weights[f_name] += lr * 0.2
+        except Exception as e:
+            continue
+            
+    # Normalize
+    for k in weights: weights[k] = max(0.02, weights[k])
+    total = sum(weights.values())
+    weights = {k: v / total for k, v in weights.items()}
+    
+    stats = {
+        "total_learned": len(trades),
+        "wins_learned": wins,
+        "losses_learned": losses,
+        "last_learn": datetime.now().isoformat(),
+        "type": "BATCH_OPTIMIZATION"
+    }
+    
+    _save_weights(weights, stats)
+    print(f"[QuantEngine] 🧠 Batch-Оптимізація завершена ({len(trades)} угод: {wins} W / {losses} L).")
+
 
 if __name__ == "__main__":
     # Тест: оцінка фіктивного сетапу
@@ -441,3 +514,4 @@ if __name__ == "__main__":
     print(f"Verdict: {result['verdict']}")
     print(f"Rationale: {result['rationale']}")
     print(f"Factors: {json.dumps(result['factors'], indent=2)}")
+
