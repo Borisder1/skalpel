@@ -14,6 +14,7 @@ import math
 import time
 import requests
 from datetime import datetime
+from news_oracle import get_news_sentiment
 
 # Файл для збереження оптимізованих ваг
 WEIGHTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quant_weights.json")
@@ -35,6 +36,7 @@ DEFAULT_WEIGHTS = {
     "smc_structure":    0.08,   # SMC структурна конфлюенція
     "impulse_quality":  0.04,   # Імпульс свічки
     "macro_confluence": 0.18,   # Макро конфлюенція (DXY, Oil, Gold)
+    "news_sentiment":   0.05,   # Новинний фон (CryptoPanic)
 }
 
 
@@ -183,7 +185,8 @@ def get_macro_context() -> dict:
     assets = {
         "DXY": "DX-Y.NYB",
         "Oil": "CL=F",
-        "Gold": "GC=F"
+        "Gold": "GC=F",
+        "BTC": "BTC-USD"
     }
     
     result_data = {}
@@ -246,6 +249,13 @@ def _score_macro_confluence(direction: str) -> float:
         if gold == "BEAR": score += 0.3
         elif gold == "NEUTRAL": score += 0.15
         
+    # 4. BTC Market Neutrality: Сильно пеналізуємо лонги альтів, якщо BTC падає.
+    btc = macro.get("BTC", "NEUTRAL")
+    if direction == "LONG" and btc == "BEAR":
+        score -= 0.5  # Дуже сильний штраф
+    elif direction == "SHORT" and btc == "BULL":
+        score -= 0.3  # Штраф за шорт проти зростаючого ринку
+        
     return score
 
 
@@ -295,12 +305,19 @@ def score_setup(
     """
     weights = _load_weights()
 
-    # Визначаємо вирівнювання SMC з напрямком
     is_long = direction == "LONG"
     bos_aligned = bos_bull if is_long else bos_bear
     choch_aligned = choch_bull if is_long else choch_bear
     fvg_naked = bull_fvg if is_long else bear_fvg
     is_impulse = is_impulse_bull if is_long else is_impulse_bear
+    
+    # Отримуємо новинний фон
+    news = get_news_sentiment(symbol)
+    news_score = 0.5
+    if is_long and news["status"] == "BULLISH": news_score = 1.0
+    elif not is_long and news["status"] == "BEARISH": news_score = 1.0
+    elif is_long and news["status"] == "BEARISH": news_score = 0.1
+    elif not is_long and news["status"] == "BULLISH": news_score = 0.1
     
     body_to_atr = abs(entry - sl) / max(atr, 1e-10) if atr > 0 else 0.5
 
@@ -315,6 +332,7 @@ def score_setup(
         "smc_structure":    _score_smc_structure(bos_aligned, choch_aligned, ob_active, fvg_naked),
         "impulse_quality":  _score_impulse(is_impulse, body_to_atr),
         "macro_confluence": _score_macro_confluence(direction),
+        "news_sentiment":   news_score,
     }
 
     # Зважена сума
@@ -448,34 +466,86 @@ def optimize_weights_from_history(limit: int = 500):
         return
         
     weights = _load_weights()
-    lr = 0.01
-    
     wins = 0
     losses = 0
     
+    # Prepare data for MLPRegressor
+    import numpy as np
+    try:
+        from sklearn.neural_network import MLPRegressor
+    except ImportError:
+        print("[QuantEngine] ⚠️ scikit-learn не знайдено, використовується лінійна оптимізація.")
+        MLPRegressor = None
+
+    X = []
+    y = []
+    factor_names = list(weights.keys())
+
     for row in trades:
         try:
             pnl = float(row['pnl'])
             factors = json.loads(row['factors_snapshot'])
-            if not factors:
-                continue
-                
+            if not factors: continue
+            
             outcome = "WIN" if pnl > 0 else "LOSS"
             if outcome == "WIN": wins += 1
             else: losses += 1
             
-            for f_name, f_score in factors.items():
-                if f_name not in weights: continue
-                if outcome == "WIN":
-                    if f_score > 0.6: weights[f_name] += lr * f_score
-                    elif f_score < 0.3: weights[f_name] -= lr * 0.5
-                else:
-                    if f_score > 0.6: weights[f_name] -= lr * 0.3
-                    elif f_score < 0.3: weights[f_name] += lr * 0.2
-        except Exception as e:
-            continue
+            # Vectorize features
+            vec = [float(factors.get(name, 0.5)) for name in factor_names]
+            X.append(vec)
+            y.append(1.0 if outcome == "WIN" else 0.0)
             
-    # Normalize
+        except Exception:
+            continue
+
+    if MLPRegressor and len(X) > 50:
+        # Neural Network Optimization
+        X_arr = np.array(X)
+        y_arr = np.array(y)
+        
+        # Train lightweight MLP
+        model = MLPRegressor(hidden_layer_sizes=(16, 8), max_iter=500, random_state=42)
+        model.fit(X_arr, y_arr)
+        
+        # Infer weights via feature permutation/probing
+        baseline = np.full((1, len(factor_names)), 0.5)
+        base_pred = model.predict(baseline)[0]
+        
+        new_weights = {}
+        for i, f_name in enumerate(factor_names):
+            probe = baseline.copy()
+            probe[0, i] = 1.0
+            pred = model.predict(probe)[0]
+            # How much does maximizing this factor increase probability of win?
+            importance = max(0.01, pred - base_pred)
+            new_weights[f_name] = importance
+            
+        # Normalize extracted weights
+        total_imp = sum(new_weights.values())
+        if total_imp > 0:
+            weights = {k: v / total_imp for k, v in new_weights.items()}
+        print(f"[QuantEngine] 🧠 Навчання через Neural Network завершено.")
+    else:
+        # Fallback to linear if no sklearn or not enough data
+        lr = 0.01
+        for row in trades:
+            try:
+                pnl = float(row['pnl'])
+                factors = json.loads(row['factors_snapshot'])
+                if not factors: continue
+                outcome = "WIN" if pnl > 0 else "LOSS"
+                for f_name, f_score in factors.items():
+                    if f_name not in weights: continue
+                    if outcome == "WIN":
+                        if f_score > 0.6: weights[f_name] += lr * f_score
+                        elif f_score < 0.3: weights[f_name] -= lr * 0.5
+                    else:
+                        if f_score > 0.6: weights[f_name] -= lr * 0.3
+                        elif f_score < 0.3: weights[f_name] += lr * 0.2
+            except Exception: pass
+            
+        # Normalize
     for k in weights: weights[k] = max(0.02, weights[k])
     total = sum(weights.values())
     weights = {k: v / total for k, v in weights.items()}

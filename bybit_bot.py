@@ -399,6 +399,31 @@ def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pc
             send_telegram_message(f"⛔ <b>{symbol}</b>: некоректні SL/TP — ордер не створено.<br><code>{levels_reason}</code>")
             return None
 
+        # 0. Перевірка Order Book Imbalance (HFT Level 2 Filter)
+        try:
+            ob = safe_api_call(exchange.fetch_order_book, symbol, limit=50)
+            if ob:
+                bids = ob.get('bids', [])
+                asks = ob.get('asks', [])
+                current_price = bids[0][0] if bids else entry
+                
+                # Рахуємо об'єм в межах 1% від поточної ціни
+                bid_vol = sum(amount for price, amount in bids if price >= current_price * 0.99)
+                ask_vol = sum(amount for price, amount in asks if price <= current_price * 1.01)
+                
+                if direction == "LONG" and bid_vol > 0 and (ask_vol / bid_vol) >= 3.0:
+                    cancel_reason = f"Order Book Imbalance: Ask стіна в {ask_vol/bid_vol:.1f}x більша за Bids"
+                    print(f"[{datetime.now()}] 🛡 Скасовано {symbol}: {cancel_reason}")
+                    send_telegram_message(f"🛡 <b>{symbol}</b>: LONG скасовано.<br><code>{cancel_reason}</code>")
+                    return None
+                elif direction == "SHORT" and ask_vol > 0 and (bid_vol / ask_vol) >= 3.0:
+                    cancel_reason = f"Order Book Imbalance: Bid стіна в {bid_vol/ask_vol:.1f}x більша за Asks"
+                    print(f"[{datetime.now()}] 🛡 Скасовано {symbol}: {cancel_reason}")
+                    send_telegram_message(f"🛡 <b>{symbol}</b>: SHORT скасовано.<br><code>{cancel_reason}</code>")
+                    return None
+        except Exception as e_ob:
+            print(f"[{datetime.now()}] ⚠️ Помилка отримання стакану для {symbol}: {e_ob}")
+
         # 1. Отримуємо демо-баланс
         balance_info = safe_api_call(exchange.fetch_balance)
         free_usdt = balance_info.get('USDT', {}).get('free', 0.0)
