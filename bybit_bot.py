@@ -22,7 +22,7 @@ from telegram_notifier import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
 )
-from db_logger import init_db, log_trade, update_trade_status, get_open_trades, get_trade_by_order_id
+from db_logger import init_db, log_trade, update_trade_status, get_open_trades, get_trade_by_order_id, update_breakeven_status
 from ai_signal_agent import generate_ai_signal
 from quant_engine import score_setup, learn_from_trade
 from adaptive_filters import AdaptiveFilterManager
@@ -640,6 +640,23 @@ def cancel_stale_orders(exchange, config: dict):
                     update_trade_status(symbol=symbol, status="CANCELLED", pnl=0.0, order_id=order_id)
 
 
+def set_bybit_position_sl(exchange, symbol, direction, new_sl):
+    """Встановлює новий Stop Loss для позиції на Bybit V5."""
+    try:
+        market = exchange.market(symbol)
+        params = {
+            'category': 'linear',
+            'symbol': market['id'],
+            'stopLoss': exchange.price_to_precision(symbol, new_sl),
+            'tpslMode': 'Full',
+            'positionIdx': 0
+        }
+        return safe_api_call(exchange.privateLinearPostPositionTradingStop, params)
+    except Exception as e:
+        print(f"[{datetime.now()}] ⚠️ Не вдалося встановити SL для {symbol} на Bybit: {e}")
+        return None
+
+
 def sync_open_trades(exchange, config: dict):
     """Синхронізує відкриті угоди в базі даних з їх реальним статусом на Bybit."""
     try:
@@ -671,6 +688,76 @@ def sync_open_trades(exchange, config: dict):
                 
             status_current = t.get("status")
             is_virtual = bool(status_current == "VIRTUAL_OPEN")
+
+            # 0.1. Перевіряємо таймаут для віртуальних угод (48 годин)
+            if is_virtual:
+                try:
+                    trade_time_str = t.get("timestamp")
+                    trade_time_dt = datetime.strptime(trade_time_str, "%Y-%m-%d %H:%M:%S")
+                    age_seconds = (datetime.now() - trade_time_dt).total_seconds()
+                    if age_seconds >= 172800:  # 48 годин
+                        print(f"[{datetime.now()}] 🧠 Віртуальна угода {symbol} застаріла ({age_seconds/3600:.1f} год). Закриваємо за таймаутом.")
+                        update_trade_status(symbol=symbol, status="CANCELLED", pnl=0.0, order_id=order_id)
+                        send_telegram_message(
+                            f"🧠 <b>Virtual Trade Timeout</b>\n"
+                            f"Монета: <b>{symbol}</b> ({direction})\n"
+                            f"Віртуальну угоду скасовано після 48 годин очікування."
+                        )
+                        continue
+                except Exception as e_timeout:
+                    print(f"[{datetime.now()}] ⚠️ Помилка перевірки таймауту для {symbol}: {e_timeout}")
+
+            # 0. Перевіряємо та переводимо реальну позицію в безубиток при досягненні TP1
+            if not is_virtual and t.get("breakeven_activated", 0) == 0:
+                symbol_positions = [p for p in positions if p.get("symbol") == symbol]
+                side_target = "buy" if direction == "LONG" else "sell"
+                matching_pos = None
+                for pos in symbol_positions:
+                    side = str(pos.get("side") or pos.get("info", {}).get("side", "")).lower()
+                    if side in {"buy", "long"} and side_target == "buy":
+                        matching_pos = pos
+                    elif side in {"sell", "short"} and side_target == "sell":
+                        matching_pos = pos
+                        
+                if matching_pos:
+                    current_price = float(matching_pos.get("markPrice") or matching_pos.get("info", {}).get("markPrice") or 0.0)
+                    tp1 = t.get("take_profit_1") or (entry_price * 1.02 if direction == "LONG" else entry_price * 0.98)
+                    if current_price > 0 and tp1 > 0:
+                        activated = False
+                        if direction == "LONG" and current_price >= tp1:
+                            activated = True
+                        elif direction == "SHORT" and current_price <= tp1:
+                            activated = True
+                            
+                        if activated:
+                            print(f"[{datetime.now()}] 🎉 TP1 досягнуто для реальної позиції {symbol} ({current_price}). Переводимо в безубиток та закриваємо 50% об'єму.")
+                            contracts = float(matching_pos.get("contracts") or matching_pos.get("info", {}).get("size") or 0.0)
+                            if contracts > 0:
+                                qty_to_close = contracts * 0.5
+                                qty_str = exchange.amount_to_precision(symbol, qty_to_close)
+                                qty_val = float(qty_str)
+                                if qty_val > 0:
+                                    close_side = "sell" if direction == "LONG" else "buy"
+                                    try:
+                                        print(f"[{datetime.now()}] 📤 Закриваємо 50% ({qty_val}) позиції {symbol} ринковим ордером.")
+                                        safe_api_call(
+                                            exchange.create_order,
+                                            symbol=symbol,
+                                            type='market',
+                                            side=close_side,
+                                            amount=qty_val
+                                        )
+                                    except Exception as e_close:
+                                        print(f"[{datetime.now()}] ⚠️ Не вдалося закрити 50% позиції {symbol}: {e_close}")
+                                        
+                            set_bybit_position_sl(exchange, symbol, direction, entry_price)
+                            update_breakeven_status(symbol=symbol, order_id=order_id, status=1)
+                            send_telegram_message(
+                                f"🎉 <b>TP1 Досягнуто! (Безубиток)</b>\n"
+                                f"Монета: <b>{symbol}</b> ({direction})\n"
+                                f"Ціна: {current_price} | TP1: {tp1}\n"
+                                f"🛡 50% об'єму закрито за ринком, SL для решти перенесено в безубиток ({entry_price})."
+                            )
 
             # 1. Перевіряємо, чи є активна позиція по цьому символу
             symbol_positions = [p for p in positions if p.get("symbol") == symbol]
@@ -774,25 +861,65 @@ def sync_open_trades(exchange, config: dict):
                             # Немає свічок, які покривають період після відкриття угоди, чекаємо наступного циклу
                             continue
                             
-                        highs = ohlcv["high"].tolist()
-                        lows = ohlcv["low"].tolist()
+                        tp1 = t.get("take_profit_1") or (entry_price * 1.02 if direction == "LONG" else entry_price * 0.98)
                         tp2 = t.get("take_profit_2") or (entry_price * 1.05 if direction == "LONG" else entry_price * 0.95)
-                        sl = t.get("stop_loss") or (entry_price * 0.98 if direction == "LONG" else entry_price * 1.02)
                         
-                        reached_tp = False
+                        # Поточний статус безубитку та Stop Loss
+                        breakeven_activated = bool(t.get("breakeven_activated", 0) == 1)
+                        sl_initial = t.get("stop_loss") or (entry_price * 0.98 if direction == "LONG" else entry_price * 1.02)
+                        sl_current = entry_price if breakeven_activated else sl_initial
+                        
+                        reached_tp1 = False
+                        reached_tp2 = False
                         reached_sl = False
                         
-                        if direction == "LONG":
-                            if max(highs) >= tp2:
-                                reached_tp = True
-                            if min(lows) <= sl:
-                                reached_sl = True
-                        else:
-                            if min(lows) <= tp2:
-                                reached_tp = True
-                            if max(highs) >= sl:
-                                reached_sl = True
-                                
+                        # Хронологічний перебір свічок (усунення Lookahead Bias)
+                        for _, row in ohlcv.iterrows():
+                            h_val = float(row["high"])
+                            l_val = float(row["low"])
+                            
+                            if direction == "LONG":
+                                # 1. Спочатку Stop Loss
+                                if l_val <= sl_current:
+                                    reached_sl = True
+                                    break
+                                # 2. Потім TP1 (безубиток)
+                                if not breakeven_activated and not reached_tp1 and h_val >= tp1:
+                                    reached_tp1 = True
+                                    breakeven_activated = True
+                                    sl_current = entry_price
+                                # 3. Потім TP2
+                                if h_val >= tp2:
+                                    reached_tp2 = True
+                                    break
+                            else: # SHORT
+                                # 1. Спочатку Stop Loss
+                                if h_val >= sl_current:
+                                    reached_sl = True
+                                    break
+                                # 2. Потім TP1 (безубиток)
+                                if not breakeven_activated and not reached_tp1 and l_val <= tp1:
+                                    reached_tp1 = True
+                                    breakeven_activated = True
+                                    sl_current = entry_price
+                                # 3. Потім TP2
+                                if l_val <= tp2:
+                                    reached_tp2 = True
+                                    break
+                                    
+                        # Оновлюємо безубиток у БД та надсилаємо повідомлення
+                        if reached_tp1 and t.get("breakeven_activated", 0) == 0:
+                            print(f"[{datetime.now()}] 🧠 Віртуальна угода {symbol}: досягнуто TP1 ({tp1}). Переводимо в безубиток.")
+                            update_breakeven_status(symbol=symbol, order_id=order_id, status=1)
+                            send_telegram_message(
+                                f"🧠 <b>Virtual TP1 Reached (Breakeven)</b>\n"
+                                f"Монета: <b>{symbol}</b> ({direction})\n"
+                                f"Ціна входу: {entry_price} | TP1: {tp1}\n"
+                                f"Віртуальний SL перенесено в безубиток."
+                            )
+                        
+                        sl = sl_current
+                        
                         # Розраховуємо пропорційний об'єм на основі ризику для віртуальних PnL
                         risk_pct = float(config.get("risk_pct", 1.0))
                         risk_pct = min(max(risk_pct, 0.1), 1.0)
@@ -802,7 +929,7 @@ def sync_open_trades(exchange, config: dict):
                             price_diff = entry_price * 0.02
                         virtual_qty = risk_amount / price_diff
                         
-                        if reached_tp and not reached_sl:
+                        if reached_tp2 and not reached_sl:
                             status_outcome = "VIRTUAL_WIN" if is_virtual else "WIN"
                             exit_price = tp2
                             actual_pnl = virtual_qty * abs(tp2 - entry_price)

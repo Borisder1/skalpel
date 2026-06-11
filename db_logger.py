@@ -32,7 +32,8 @@ def init_db():
                 pnl REAL,
                 order_id TEXT,
                 quant_score REAL,
-                factors_snapshot TEXT
+                factors_snapshot TEXT,
+                breakeven_activated INTEGER DEFAULT 0
             )
             """
         )
@@ -47,6 +48,10 @@ def init_db():
             pass
         try:
             conn.execute("ALTER TABLE trades ADD COLUMN factors_snapshot TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE trades ADD COLUMN breakeven_activated INTEGER DEFAULT 0")
         except sqlite3.OperationalError:
             pass
     logger.info("База даних ініціалізована: %s", DB_PATH)
@@ -104,6 +109,26 @@ def update_trade_status(symbol: str, status: str, pnl: float, order_id: str = No
                 )
                 """,
                 (status, pnl, symbol),
+            )
+def update_breakeven_status(symbol: str, order_id: str = None, status: int = 1):
+    """Оновлює прапорець активації безубитку для угоди."""
+    with get_db_conn() as conn:
+        if order_id:
+            conn.execute(
+                "UPDATE trades SET breakeven_activated = ? WHERE order_id = ?",
+                (status, order_id)
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE trades SET breakeven_activated = ? 
+                WHERE id = (
+                    SELECT id FROM trades 
+                    WHERE symbol = ? AND status IN ('OPEN', 'VIRTUAL_OPEN')
+                    ORDER BY id DESC LIMIT 1
+                )
+                """,
+                (status, symbol)
             )
 
 

@@ -54,7 +54,7 @@ def generate_ai_signal(exchange, symbols, timeframe="15m"):
         "market": market_snap,
     }
 
-    def call_ai_api_with_retry(max_retries=3):
+    def call_ai_api_with_retry(max_retries=2):
         for attempt in range(max_retries):
             try:
                 return client.chat.completions.create(
@@ -66,7 +66,7 @@ def generate_ai_signal(exchange, symbols, timeframe="15m"):
                     temperature=0.2,
                     top_p=0.9,
                     max_tokens=1024,
-                    timeout=15.0,  # 15 seconds timeout
+                    timeout=5.0,  # 5 seconds timeout
                 )
             except Exception as e:
                 if "429" in str(e):
@@ -79,7 +79,7 @@ def generate_ai_signal(exchange, symbols, timeframe="15m"):
         return None
 
     try:
-        resp = call_ai_api_with_retry(max_retries=3)
+        resp = call_ai_api_with_retry(max_retries=2)
         if resp is None:
             return None
         content = resp.choices[0].message.content if resp.choices and resp.choices[0].message else None
