@@ -375,14 +375,7 @@ def poll_telegram_callbacks(token, pending_signals):
             elif data == "menu_main_stats":
                 answer_callback(token, callback["id"], "Оновлюю статистику...")
                 import pnl_tracker
-                summ = pnl_tracker.get_summary()
-                text = (
-                    f"📊 *Статистика*\n"
-                    f"Всього угод: {summ['total_trades']}\n"
-                    f"Вінрейт: {summ['win_rate']:.1f}%\n"
-                    f"Прибуток: {summ['total_pnl']:.2f} USDT\n"
-                    f"Найкраща угода: {summ['best_trade']:.2f} USDT"
-                )
+                text = pnl_tracker.get_summary()
                 requests.post(
                     f"https://api.telegram.org/bot{token}/sendMessage",
                     json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
