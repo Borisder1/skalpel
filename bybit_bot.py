@@ -1496,6 +1496,27 @@ def run_bot():
                         factors_snapshot = quant_res["factors"]
                         auto_thresh = float(CONFIG.get("auto_execute_confidence_threshold", 0.65))
                         
+                        # --- V8.0: Vision AI Filter ---
+                        if conf >= auto_thresh or require_confirmation:
+                            try:
+                                import vision_agent
+                                print(f"[{datetime.now()}] 👁️ Перевірка {symbol} через Vision AI (PaliGemma)...")
+                                vision_decision = vision_agent.ask_vision_oracle(df, symbol)
+                                if (direction == "LONG" and vision_decision == "BEARISH") or (direction == "SHORT" and vision_decision == "BULLISH"):
+                                    print(f"[{datetime.now()}] 🚫 Vision AI заблокував {direction} для {symbol}. Зображення вказує на {vision_decision}.")
+                                    record_event("setup_blocked_by_vision_ai", {"symbol": symbol, "vision": vision_decision})
+                                    continue
+                                elif (direction == "LONG" and vision_decision == "BULLISH") or (direction == "SHORT" and vision_decision == "BEARISH"):
+                                    conf = min(0.99, conf + 0.15) # Bonus for visual confirmation
+                                    rationale += f" | 👁️ Vision AI підтверджує {vision_decision}."
+                                    factors_snapshot["vision_score"] = 0.15
+                                else:
+                                    rationale += f" | 👁️ Vision AI: NEUTRAL."
+                                    factors_snapshot["vision_score"] = 0.0
+                            except Exception as e_vision:
+                                print(f"[{datetime.now()}] ⚠️ Помилка Vision AI: {e_vision}")
+
+                        
                         signal_payload["quant_score"] = conf
                         signal_payload["factors_snapshot"] = factors_snapshot
                         signal_payload["ai_confidence"] = conf
