@@ -1088,6 +1088,32 @@ def run_bot():
             print(f"[{datetime.now()}] 🛑 Risk guard stop: session_dd={session_dd:.2f}% daily_dd={daily_dd:.2f}%")
             time.sleep(60)
             continue
+            
+        # V8.0: Autonomous Reflection Agent
+        try:
+            import pnl_tracker
+            import reflection_agent
+            consec_losses = pnl_tracker.get_consecutive_losses()
+            if consec_losses >= 3:
+                # To prevent endless triggering, check if we already reflected today or wait 1 hour
+                last_reflection_time = getattr(reflection_agent, "_last_reflection", 0)
+                if time.time() - last_reflection_time > 3600:
+                    ctx = pnl_tracker.get_recent_trades_context(limit=consec_losses)
+                    reflection_agent._last_reflection = time.time()
+                    analysis = reflection_agent.ask_kimi_reflection(ctx)
+                    regime = analysis.get("regime", "UNKNOWN")
+                    rec = analysis.get("recommendation", "")
+                    msg = f"🧠 *AI Рефлексія (Збитки: {consec_losses})*\nРинок: {regime}\nПорада: {rec}"
+                    print(msg)
+                    send_telegram_message(msg)
+                    
+                    if regime in ["CHOP", "VOLATILE", "MANIPULATION"]:
+                        print(f"[{datetime.now()}] 🛑 AI зупиняє торгівлю через поганий ринок на 1 годину.")
+                        time.sleep(3600)
+                        continue
+        except Exception as e_refl:
+            print(f"[{datetime.now()}] ⚠️ Помилка виклику Reflection Agent: {e_refl}")
+
         # Щоденний звіт о 23:59 UTC
         now_utc = datetime.now(timezone.utc)
         if now_utc.hour == 23 and now_utc.minute >= 59:

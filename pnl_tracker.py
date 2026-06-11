@@ -64,3 +64,23 @@ def get_summary():
         f"Гірша угода: *{s['worst_trade']:.4f}*\n"
         f"━━━━━━━━━━━━━━━"
     )
+
+def get_consecutive_losses():
+    s = load_stats()
+    trades = s.get("trades", [])
+    losses = 0
+    for t in reversed(trades):
+        if t.get("pnl", 0) < 0:
+            losses += 1
+        else:
+            break
+    return losses
+    
+def get_recent_trades_context(limit=3):
+    s = load_stats()
+    trades = s.get("trades", [])[-limit:]
+    context = ""
+    for i, t in enumerate(trades):
+        res = "LOSS" if t.get("pnl", 0) < 0 else "WIN"
+        context += f"Trade {i+1}: {t.get('direction')} {t.get('symbol')}. Entry: {t.get('entry')}, Exit: {t.get('exit')}. Result: {res} ({t.get('pnl')} USDT).\n"
+    return context

@@ -1,0 +1,21 @@
+{
+  "weights": {
+    "rr_quality": 0.14089789875893038,
+    "volume_confirm": 0.10198681604654634,
+    "adx_strength": 0.080005051699515,
+    "fvg_size": 0.03857290369241597,
+    "htf_confluence": 0.05345664834597269,
+    "session_quality": 0.06112492135874491,
+    "smc_structure": 0.14010573797832948,
+    "impulse_quality": 0.12324837612315756,
+    "macro_confluence": 0.17596826479703948,
+    "news_sentiment": 0.0846333811993481
+  },
+  "updated_at": "2026-06-11T23:53:55.347708",
+  "stats": {
+    "total_learned": 0,
+    "last_learn": "2026-06-11T23:53:55.347700",
+    "type": "GENETIC_EVOLUTION",
+    "simulated_pnl": 0.0
+  }
+}
