@@ -298,6 +298,7 @@ def send_main_menu(token, chat_id, message_id=None):
             json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "reply_markup": keyboard},
             timeout=10
         )
+def poll_telegram_callbacks(token, pending_signals):
     global _LAST_UPDATE_ID
     try:
         resp = requests.get(
