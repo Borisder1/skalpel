@@ -106,7 +106,29 @@ def run_evolution(generations=5):
             
         population = next_gen
         
+        population = next_gen
+        
     best_genome = population[0]
+    
+    # Generate Report
+    report = f"🧬 Еволюцію завершено. Симульований PnL: {best_pnl:.2f} USDT.\n"
+    increased = []
+    decreased = []
+    for k in base.keys():
+        old_w = base.get(k, 0)
+        new_w = best_genome.get(k, 0)
+        diff = new_w - old_w
+        if diff > 0.02:
+            increased.append(f"{k} (+{diff:.1%})")
+        elif diff < -0.02:
+            decreased.append(f"{k} ({diff:.1%})")
+            
+    if increased: report += f"📈 Посилили фактори: {', '.join(increased)}\n"
+    if decreased: report += f"📉 Зменшили фактори: {', '.join(decreased)}\n"
+    if not increased and not decreased: report += "⚖️ Ваги майже не змінилися.\n"
+    
+    import db_logger
+    db_logger.save_ai_memory("GENETIC_EVOLUTION", best_genome, "UNKNOWN", best_pnl, report)
     
     _save_weights(best_genome, {
         "total_learned": 0,
@@ -114,7 +136,8 @@ def run_evolution(generations=5):
         "type": "GENETIC_EVOLUTION",
         "simulated_pnl": best_pnl
     })
-    print(f"[{datetime.now()}] ✅ Еволюцію завершено. Новий геном збережено.")
+    print(f"[{datetime.now()}] ✅ Еволюцію завершено. Новий геном збережено в AI Memory.")
+    return report
 
 if __name__ == "__main__":
     run_evolution()

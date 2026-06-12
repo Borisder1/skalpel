@@ -282,7 +282,7 @@ def send_main_menu(token, chat_id, message_id=None):
             ],
             [
                 {"text": "⚙️ Налаштування", "callback_data": "menu_main_settings"},
-                {"text": "🧠 Звіт AI-Ядра", "callback_data": "menu_main_ai_report"}
+                {"text": "🧠 Що працює зараз?", "callback_data": "menu_main_ai_report"}
             ]
         ]
     }
@@ -394,13 +394,25 @@ def poll_telegram_callbacks(token, pending_signals):
                     timeout=10
                 )
             elif data == "menu_main_ai_report":
-                answer_callback(token, callback["id"], "Формую AI-Звіт...")
-                import quant_engine
-                quant_engine.optimize_weights_from_history(limit=50) # run an ad-hoc mini optimization
-                weights = quant_engine._load_weights()
-                text = f"🧠 *Ваги AI-Ядра:*\n"
-                for k, v in weights.items():
-                    text += f"• {k}: {v:.2f}\n"
+                answer_callback(token, callback["id"], "Отримую пам'ять ШІ...")
+                import db_logger
+                mem = db_logger.get_latest_ai_memory()
+                if mem:
+                    text = f"🧠 *Persistent AI Memory*\nОновлено: {mem['timestamp']}\n\n"
+                    text += f"*{mem['event_type']}*\n"
+                    if mem.get('report'):
+                        text += f"{mem['report']}\n"
+                    else:
+                        text += "Звіт порожній.\n"
+                    
+                    weights = mem.get('best_weights', {})
+                    if weights:
+                        text += "\n*Поточні ваги факторів:*\n"
+                        for k, v in sorted(weights.items(), key=lambda x: x[1], reverse=True):
+                            text += f"• {k}: {v*100:.1f}%\n"
+                else:
+                    text = "🤷‍♂️ AI Memory поки порожня. Еволюція ще не запускалася."
+
                 requests.post(
                     f"https://api.telegram.org/bot{token}/sendMessage",
                     json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},

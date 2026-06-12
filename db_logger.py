@@ -54,6 +54,21 @@ def init_db():
             conn.execute("ALTER TABLE trades ADD COLUMN breakeven_activated INTEGER DEFAULT 0")
         except sqlite3.OperationalError:
             pass
+            
+        # V8.5: AI Memory
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ai_memory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                event_type TEXT,
+                best_weights_json TEXT,
+                market_regime TEXT,
+                simulated_pnl REAL,
+                report TEXT
+            )
+            """
+        )
     logger.info("База даних ініціалізована: %s", DB_PATH)
 
 
@@ -140,6 +155,34 @@ def get_trade_by_order_id(order_id: str):
         cursor.execute("SELECT * FROM trades WHERE order_id = ?", (order_id,))
         row = cursor.fetchone()
         return dict(row) if row else None
+
+# V8.5 AI Memory Functions
+def save_ai_memory(event_type: str, best_weights: dict, market_regime: str, simulated_pnl: float, report: str):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    weights_json = json.dumps(best_weights)
+    with get_db_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO ai_memory (timestamp, event_type, best_weights_json, market_regime, simulated_pnl, report)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (timestamp, event_type, weights_json, market_regime, simulated_pnl, report)
+        )
+
+def get_latest_ai_memory():
+    with get_db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM ai_memory ORDER BY id DESC LIMIT 1")
+        row = cursor.fetchone()
+        if row:
+            res = dict(row)
+            try:
+                res["best_weights"] = json.loads(res["best_weights_json"])
+            except:
+                res["best_weights"] = {}
+            return res
+        return None
 
 
 if __name__ == "__main__":

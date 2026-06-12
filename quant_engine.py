@@ -40,8 +40,17 @@ DEFAULT_WEIGHTS = {
 }
 
 
+import db_logger
+
 def _load_weights() -> dict:
-    """Завантажує оптимізовані ваги або дефолтні."""
+    """Завантажує оптимізовані ваги з БД (або файлу як фоллбек) або дефолтні."""
+    try:
+        mem = db_logger.get_latest_ai_memory()
+        if mem and mem.get("best_weights"):
+            return mem["best_weights"]
+    except Exception as e:
+        print(f"[QuantEngine] Помилка завантаження ваг з БД: {e}")
+        
     if os.path.exists(WEIGHTS_FILE):
         try:
             with open(WEIGHTS_FILE, "r") as f:
@@ -53,7 +62,7 @@ def _load_weights() -> dict:
 
 
 def _save_weights(weights: dict, stats: dict = None):
-    """Зберігає оптимізовані ваги."""
+    """Зберігає оптимізовані ваги в БД і файл."""
     data = {
         "weights": weights,
         "updated_at": datetime.now().isoformat(),
@@ -63,6 +72,13 @@ def _save_weights(weights: dict, stats: dict = None):
     with open(temp, "w") as f:
         json.dump(data, f, indent=2)
     os.replace(temp, WEIGHTS_FILE)
+    
+    # Зберігаємо в AI Memory (DB)
+    try:
+        report = f"Ваги оновлено після навчання. Всього навчено угод: {stats.get('total_learned', 0)}"
+        db_logger.save_ai_memory("LEARNING", weights, "UNKNOWN", 0.0, report)
+    except Exception as e:
+        print(f"[QuantEngine] Помилка збереження в AI Memory: {e}")
 
 
 def _sigmoid(x: float, center: float = 0.5, steepness: float = 10.0) -> float:

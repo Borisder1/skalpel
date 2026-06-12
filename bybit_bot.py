@@ -1754,6 +1754,19 @@ def run_bot():
             last_ai_signal_ping = time.time()
 
         cycle_index += 1
+        
+        # --- V8.5 Persistent AI Memory: Auto-Evolution ---
+        if cycle_index > 0 and cycle_index % 300 == 0:
+            print(f"[{datetime.now()}] 🧬 Цикл {cycle_index}: Запуск фонової Генетичної Еволюції...")
+            import threading
+            def _run_evo():
+                try:
+                    from genetic_algo import run_evolution
+                    report = run_evolution(generations=5)
+                    send_telegram_message(f"🧠 <b>Генетична Еволюція Завершена!</b>\n\n{report}")
+                except Exception as e:
+                    print(f"Помилка еволюції: {e}")
+            threading.Thread(target=_run_evo, daemon=True).start()
 
         # Перевірка для чергового запуску ШІ-агентів (раз на 24 години)
         if time.time() - last_agents_run > 86400:
