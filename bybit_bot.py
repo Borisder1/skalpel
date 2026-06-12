@@ -1758,7 +1758,6 @@ def run_bot():
         # --- V8.5 Persistent AI Memory: Auto-Evolution ---
         if cycle_index > 0 and cycle_index % 300 == 0:
             print(f"[{datetime.now()}] 🧬 Цикл {cycle_index}: Запуск фонової Генетичної Еволюції...")
-            import threading
             def _run_evo():
                 try:
                     from genetic_algo import run_evolution
