@@ -1053,7 +1053,7 @@ def run_bot():
                     time.sleep(0.8)
                 else:
                     consecutive_failures += 1
-                    sleep_time = min(30.0, 0.8 * (2 ** consecutive_failures))
+                    sleep_time = min(30.0, 0.8 * (2 ** min(consecutive_failures, 10)))
                     time.sleep(sleep_time)
         threading.Thread(target=_tg_callback_loop, name="tg-callback-poller", daemon=True).start()
         print(f"[{datetime.now()}] ✅ Telegram callback poller запущено в окремому потоці (з адаптивним бекоффом)")

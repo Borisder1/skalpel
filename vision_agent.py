@@ -61,15 +61,21 @@ def ask_vision_oracle(df: pd.DataFrame, symbol: str) -> str:
         }
         
         print(f"[{datetime.now()}] 👁️ Відправка графіка {symbol} до Vision AI...")
-        response = requests.post(invoke_url, headers=headers, json=payload, timeout=20)
-        if response.status_code == 200:
-            content = response.json()["choices"][0]["message"]["content"].strip().upper()
-            if "BULL" in content: return "BULLISH"
-            if "BEAR" in content: return "BEARISH"
-            return "NEUTRAL"
-        else:
-            print(f"[{datetime.now()}] ⚠️ Помилка Vision AI: {response.text}")
-            return "NEUTRAL"
+        for attempt in range(2):
+            try:
+                response = requests.post(invoke_url, headers=headers, json=payload, timeout=45)
+                if response.status_code == 200:
+                    content = response.json()["choices"][0]["message"]["content"].strip().upper()
+                    if "BULL" in content: return "BULLISH"
+                    if "BEAR" in content: return "BEARISH"
+                    return "NEUTRAL"
+                else:
+                    print(f"[{datetime.now()}] ⚠️ Помилка Vision AI (Спроба {attempt+1}): {response.text}")
+            except requests.exceptions.RequestException as e:
+                print(f"[{datetime.now()}] ⚠️ Помилка запиту Vision AI (Спроба {attempt+1}): {e}")
+                if attempt == 1:
+                    return "NEUTRAL"
+        return "NEUTRAL"
     except Exception as e:
         print(f"[{datetime.now()}] ⚠️ Помилка генерації графіка: {e}")
         return "NEUTRAL"
