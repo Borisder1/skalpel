@@ -999,6 +999,9 @@ def sync_open_trades(exchange, config: dict):
                         print(f"[{datetime.now()}] {trade_prefix} угода {symbol} закрита (fallback): {status_outcome} PnL={actual_pnl:.4f} USDT")
                 except Exception as e_fallback:
                     print(f"[{datetime.now()}] ⚠️ Не вдалося синхронізувати угоду {symbol} через fallback: {e_fallback}")
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(open_trades), 5)) as executor:
+            executor.map(process_trade, open_trades)
     except Exception as e_sync:
         print(f"[{datetime.now()}] ⚠️ Помилка у sync_open_trades: {e_sync}")
 
