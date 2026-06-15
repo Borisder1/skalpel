@@ -7,6 +7,7 @@ import mplfinance as mpf
 from datetime import datetime
 
 PALIGEMMA_API_KEY = os.getenv("PALIGEMMA_API_KEY", "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")
+VISION_MODEL = os.getenv("VISION_MODEL", "meta/llama-3.2-11b-vision-instruct")
 
 def ask_vision_oracle(df: pd.DataFrame, symbol: str) -> str:
     """
@@ -45,7 +46,7 @@ def ask_vision_oracle(df: pd.DataFrame, symbol: str) -> str:
         }
         
         payload = {
-            "model": "meta/llama-3.2-11b-vision-instruct",
+            "model": VISION_MODEL,
             "messages": [
                 {
                     "role": "user",

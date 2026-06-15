@@ -1098,11 +1098,13 @@ def run_bot():
             import reflection_agent
             consec_losses = pnl_tracker.get_consecutive_losses()
             if consec_losses >= 3:
-                # To prevent endless triggering, check if we already reflected today or wait 1 hour
-                last_reflection_time = getattr(reflection_agent, "_last_reflection", 0)
-                if time.time() - last_reflection_time > 3600:
+                total_trades = len(pnl_tracker.load_stats().get("trades", []))
+                last_reflected_count = getattr(reflection_agent, "_last_reflected_count", 0)
+                
+                # Check if we have new closed trades since the last reflection to prevent endless pause loops
+                if total_trades > last_reflected_count:
                     ctx = pnl_tracker.get_recent_trades_context(limit=consec_losses)
-                    reflection_agent._last_reflection = time.time()
+                    reflection_agent._last_reflected_count = total_trades
                     analysis = reflection_agent.ask_kimi_reflection(ctx)
                     regime = analysis.get("regime", "UNKNOWN")
                     rec = analysis.get("recommendation", "")
