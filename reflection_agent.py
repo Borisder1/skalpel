@@ -39,17 +39,22 @@ def ask_kimi_reflection(trades_context: str) -> dict:
 
     try:
         print(f"[{datetime.now()}] 🧠 Відправка запиту на Рефлексію до Kimi 2.6...")
-        response = requests.post(invoke_url, headers=headers, json=payload, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-        
-        content = data["choices"][0]["message"]["content"]
-        
-        # Parse JSON from content (strip markdown if any)
-        content = content.replace("```json", "").replace("```", "").strip()
-        parsed = json.loads(content)
-        return parsed
-        
+        for attempt in range(2):
+            try:
+                response = requests.post(invoke_url, headers=headers, json=payload, timeout=50)
+                response.raise_for_status()
+                data = response.json()
+                
+                content = data["choices"][0]["message"]["content"]
+                
+                # Parse JSON from content (strip markdown if any)
+                content = content.replace("```json", "").replace("```", "").strip()
+                parsed = json.loads(content)
+                return parsed
+            except requests.exceptions.RequestException as req_err:
+                print(f"[{datetime.now()}] ⚠️ Помилка запиту Kimi (Спроба {attempt+1}): {req_err}")
+                if attempt == 1:
+                    raise req_err
     except Exception as e:
         print(f"[{datetime.now()}] ⚠️ Помилка Reflection Agent: {e}")
         return {

@@ -569,23 +569,16 @@ def has_same_direction_open_order(orders, direction: str) -> bool:
 
 
 def can_open_position(symbol: str, direction: str, open_positions: list, open_orders: list, config: dict, notify_tg: bool = False) -> bool:
-    # 1. Check if a position in the same direction is already open for this symbol
+    # 1. Check if any position (LONG or SHORT) is already open for this symbol to prevent opposite direction orders and Bybit SL errors in One-Way Mode
     symbol_positions = [p for p in open_positions if p.get("symbol") == symbol]
-    side_target = "buy" if direction == "LONG" else "sell"
-    for p in symbol_positions:
-        side = str(p.get("side") or p.get("info", {}).get("side", "")).lower()
-        if side in {"buy", "long"} and side_target == "buy":
-            msg = f"⛔ LONG вже відкрито для {symbol} — пропускаємо"
-            print(f"[{datetime.now()}] {msg}")
-            if notify_tg:
-                send_telegram_message(msg)
-            return False
-        if side in {"sell", "short"} and side_target == "sell":
-            msg = f"⛔ SHORT вже відкрито для {symbol} — пропускаємо"
-            print(f"[{datetime.now()}] {msg}")
-            if notify_tg:
-                send_telegram_message(msg)
-            return False
+    if symbol_positions:
+        p = symbol_positions[0]
+        side = str(p.get("side") or p.get("info", {}).get("side", "")).upper()
+        msg = f"⛔ Позиція {side} вже відкрита для {symbol} — пропускаємо новий {direction} ордер"
+        print(f"[{datetime.now()}] {msg}")
+        if notify_tg:
+            send_telegram_message(msg)
+        return False
             
     # 2. Check global portfolio max concurrent positions and active limit orders limits separately
     max_positions = int(config.get("max_concurrent_positions", 15))
@@ -1158,15 +1151,7 @@ def run_bot():
                     open_orders = get_open_orders(exchange)
                     
                     # Перевіряємо дублікат
-                    has_duplicate = False
-                    symbol_positions = [p for p in positions if p.get("symbol") == symbol]
-                    side_target = "buy" if direction == "LONG" else "sell"
-                    for p in symbol_positions:
-                        side = str(p.get("side") or p.get("info", {}).get("side", "")).lower()
-                        if side in {"buy", "long"} and side_target == "buy":
-                            has_duplicate = True
-                        if side in {"sell", "short"} and side_target == "sell":
-                            has_duplicate = True
+                    has_duplicate = any(p.get("symbol") == symbol for p in positions)
                             
                     if has_duplicate:
                         with pending_lock:
@@ -1565,15 +1550,7 @@ def run_bot():
                         open_orders = get_open_orders(exchange)
                         
                         # Перевіряємо дублікат
-                        has_duplicate = False
-                        symbol_positions = [p for p in positions if p.get("symbol") == symbol]
-                        side_target = "buy" if direction == "LONG" else "sell"
-                        for p in symbol_positions:
-                            side = str(p.get("side") or p.get("info", {}).get("side", "")).lower()
-                            if side in {"buy", "long"} and side_target == "buy":
-                                has_duplicate = True
-                            if side in {"sell", "short"} and side_target == "sell":
-                                has_duplicate = True
+                        has_duplicate = any(p.get("symbol") == symbol for p in positions)
                                 
                         if has_duplicate:
                             continue
