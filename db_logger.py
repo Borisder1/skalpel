@@ -198,14 +198,39 @@ def get_latest_ai_memory():
         return None
 
 
-# V9.0: Symbol Blacklist Functions
-def blacklist_symbol(symbol: str, reason: str, hours: int = 24):
-    """Додає монету в чорний список на вказану кількість годин."""
+# V9.1: Progressive Symbol Blacklist Functions
+# Прогресивний бан: 4г → 12г → 24г → 48г залежно від кількості збитків
+
+PROGRESSIVE_BAN_HOURS = [4, 12, 24, 48]  # Ескалація блокування
+
+
+def blacklist_symbol(symbol: str, reason: str, hours: int = None):
+    """Додає монету в чорний список з прогресивним збільшенням тривалості.
+    
+    Якщо hours=None — автоматично визначає тривалість за кількістю попередніх банів:
+    1-й бан: 4 години, 2-й: 12 годин, 3-й: 24 години, 4+: 48 годин.
+    """
     from datetime import timedelta
     now = datetime.now()
+    
+    # Визначаємо поточний рівень бану для цього символу
+    current_loss_count = 0
+    with get_db_conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT loss_count FROM symbol_blacklist WHERE symbol = ?", (symbol,))
+        row = cursor.fetchone()
+        if row:
+            current_loss_count = row[0]
+    
+    if hours is None:
+        # Прогресивна ескалація
+        ban_index = min(current_loss_count, len(PROGRESSIVE_BAN_HOURS) - 1)
+        hours = PROGRESSIVE_BAN_HOURS[ban_index]
+    
     expires = now + timedelta(hours=hours)
     blacklisted_at = now.strftime("%Y-%m-%d %H:%M:%S")
     expires_at = expires.strftime("%Y-%m-%d %H:%M:%S")
+    
     with get_db_conn() as conn:
         conn.execute(
             """
@@ -219,7 +244,9 @@ def blacklist_symbol(symbol: str, reason: str, hours: int = 24):
             """,
             (symbol, reason, blacklisted_at, expires_at)
         )
-    logger.info("🚫 Blacklisted %s until %s: %s", symbol, expires_at, reason)
+    logger.info("🚫 Blacklisted %s for %dh (level %d) until %s: %s", 
+                symbol, hours, current_loss_count + 1, expires_at, reason)
+    return {"hours": hours, "level": current_loss_count + 1, "expires_at": expires_at}
 
 
 def is_blacklisted(symbol: str) -> bool:
@@ -233,6 +260,20 @@ def is_blacklisted(symbol: str) -> bool:
         )
         count = cursor.fetchone()[0]
     return count > 0
+
+
+def get_blacklist_info(symbol: str) -> dict:
+    """Повертає інформацію про бан символу (або None якщо не забанений)."""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM symbol_blacklist WHERE symbol = ? AND expires_at > ?",
+            (symbol, now_str)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
 
 
 def get_symbol_loss_count(symbol: str, hours: int = 24) -> int:
@@ -263,6 +304,20 @@ def cleanup_expired_blacklist():
     return deleted
 
 
+def get_active_blacklist() -> list:
+    """Повертає список всіх активних банів."""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM symbol_blacklist WHERE expires_at > ? ORDER BY loss_count DESC",
+            (now_str,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     init_db()
+

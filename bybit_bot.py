@@ -22,7 +22,7 @@ from telegram_notifier import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
 )
-from db_logger import init_db, log_trade, update_trade_status, get_open_trades, get_trade_by_order_id, update_breakeven_status, is_blacklisted, blacklist_symbol, get_symbol_loss_count, cleanup_expired_blacklist
+from db_logger import init_db, log_trade, update_trade_status, get_open_trades, get_trade_by_order_id, update_breakeven_status, is_blacklisted, blacklist_symbol, get_symbol_loss_count, cleanup_expired_blacklist, get_active_blacklist
 from ai_signal_agent import generate_ai_signal
 from quant_engine import score_setup, learn_from_trade
 from adaptive_filters import AdaptiveFilterManager
@@ -870,13 +870,16 @@ def sync_open_trades(exchange, config: dict):
 
                             update_trade_status(symbol=symbol, status=status_outcome, pnl=actual_pnl, order_id=order_id)
                             print(f"[{datetime.now()}] 🎯 Угода {symbol} закрита: {status_outcome} PnL={actual_pnl:.4f} USDT")
-                            # V9.0: Auto-blacklist after loss
+                            # V9.1: Progressive auto-blacklist after loss
                             if actual_pnl < 0:
                                 _daily_loss_counter["count"] += 1
                                 _loss_count = get_symbol_loss_count(symbol, hours=24)
-                                if _loss_count >= 2:
-                                    blacklist_symbol(symbol, f"2+ збитки за 24г (total: {_loss_count})", hours=24)
-                                    send_telegram_message(f"🚫 <b>{symbol}</b> заблоковано на 24г: {_loss_count} збитків за 24г")
+                                if _loss_count >= 3:
+                                    ban_info = blacklist_symbol(symbol, f"{_loss_count} збитків за 24г")
+                                    send_telegram_message(
+                                        f"🚫 <b>{symbol}</b> заблоковано на {ban_info['hours']}г "
+                                        f"(рівень {ban_info['level']}): {_loss_count} збитків"
+                                    )
                             return
                     except Exception as e:
                         print(f"[{datetime.now()}] ⚠️ Помилка fetch_closed_pnl_bybit для {symbol}: {e}")
@@ -1001,13 +1004,16 @@ def sync_open_trades(exchange, config: dict):
                         record_trade(symbol, direction, entry_price, exit_price, actual_pnl)
                         trade_prefix = "🧠 Віртуальна" if is_virtual else "🎯"
                         print(f"[{datetime.now()}] {trade_prefix} угода {symbol} закрита (fallback): {status_outcome} PnL={actual_pnl:.4f} USDT")
-                        # V9.0: Auto-blacklist after loss (fallback path)
+                        # V9.1: Progressive auto-blacklist after loss (fallback path)
                         if actual_pnl < 0:
                             _daily_loss_counter["count"] += 1
                             _loss_count = get_symbol_loss_count(symbol, hours=24)
-                            if _loss_count >= 2:
-                                blacklist_symbol(symbol, f"2+ збитки за 24г (total: {_loss_count})", hours=24)
-                                send_telegram_message(f"🚫 <b>{symbol}</b> заблоковано на 24г: {_loss_count} збитків за 24г")
+                            if _loss_count >= 3:
+                                ban_info = blacklist_symbol(symbol, f"{_loss_count} збитків за 24г")
+                                send_telegram_message(
+                                    f"🚫 <b>{symbol}</b> заблоковано на {ban_info['hours']}г "
+                                    f"(рівень {ban_info['level']}): {_loss_count} збитків"
+                                )
                 except Exception as e_fallback:
                     print(f"[{datetime.now()}] ⚠️ Не вдалося синхронізувати угоду {symbol} через fallback: {e_fallback}")
         
@@ -1115,18 +1121,8 @@ def run_bot():
             time.sleep(60)
             continue
         
-        # V9.0: 3-Strike Daily Loss Halt
-        # Sync counter from threaded sync_open_trades
-        daily_loss_count = _daily_loss_counter["count"]
-        if daily_loss_count >= daily_loss_limit and not daily_loss_halt:
-            daily_loss_halt = True
-            send_telegram_message(f"🛑 <b>3-Strike Daily Limit!</b>\n{daily_loss_count} збитків за день. Торгівлю зупинено до 00:00 UTC.")
-        if daily_loss_halt:
-            print(f"[{datetime.now()}] 🛑 3-Strike halt active ({daily_loss_count} збитків за день). Чекаємо до 00:00 UTC.")
-            # Все одно синхронізуємо угоди (SL/TP моніторинг)
-            sync_open_trades(exchange, CONFIG)
-            time.sleep(300)
-            continue
+        # V9.1: Per-symbol progressive blacklist replaces global halt
+        # (Global halt removed — blocking is per-symbol, not per-portfolio)
         
         # V9.0: Non-blocking reflection pause
         if time.time() < reflection_pause_until:
@@ -1139,16 +1135,27 @@ def run_bot():
         try:
             regime_result = check_market_regime(exchange)
             if not regime_result["allow_trading"]:
-                print(f"[{datetime.now()}] 🛑 Режим ринку: {regime_result['regime']} — нові входи заблоковано")
-                send_telegram_message(
-                    f"🛑 <b>Regime Filter: {regime_result['regime']}</b>\n"
-                    f"{regime_result['details']}\n"
-                    f"Нові входи заблоковано. Чекаємо 2 хвилини."
-                )
-                # Все одно синхронізуємо відкриті угоди (SL/TP моніторинг)
-                sync_open_trades(exchange, CONFIG)
-                time.sleep(120)
-                continue
+                regime_name = regime_result['regime']
+                if regime_name == "MANIPULATION":
+                    # MANIPULATION — повна зупинка нових входів
+                    print(f"[{datetime.now()}] 🛑 Regime: MANIPULATION — нові входи повністю заблоковано")
+                    send_telegram_message(
+                        f"🛑 <b>Regime: MANIPULATION</b>\n"
+                        f"{regime_result['details']}\n"
+                        f"Нові входи заблоковано. Чекаємо 2 хвилини."
+                    )
+                    sync_open_trades(exchange, CONFIG)
+                    time.sleep(120)
+                    continue
+                else:
+                    # CHOP / VOLATILE — посилюємо фільтри, але НЕ блокуємо повністю
+                    print(f"[{datetime.now()}] ⚠️ Regime: {regime_name} — посилюємо фільтри (торгівля дозволена з обмеженнями)")
+                    # Посилюємо ADX поріг на +5, vol на ×1.3, підвищуємо auto_threshold
+                    CONFIG["adx_min"] = max(float(CONFIG.get("adx_min", 12)), 20.0)
+                    CONFIG["vol_multiplier_min"] = max(float(CONFIG.get("vol_multiplier_min", 0.7)), 1.0)
+                    CONFIG["auto_execute_confidence_threshold"] = max(
+                        float(CONFIG.get("auto_execute_confidence_threshold", 0.65)), 0.80
+                    )
         except Exception as e_regime:
             print(f"[{datetime.now()}] ⚠️ Помилка Regime Filter: {e_regime}")
         
