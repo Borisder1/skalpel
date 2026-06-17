@@ -69,6 +69,19 @@ def init_db():
             )
             """
         )
+        # V9.0: Symbol Blacklist
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS symbol_blacklist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT UNIQUE,
+                reason TEXT,
+                blacklisted_at TEXT,
+                expires_at TEXT,
+                loss_count INTEGER DEFAULT 0
+            )
+            """
+        )
     logger.info("База даних ініціалізована: %s", DB_PATH)
 
 
@@ -183,6 +196,71 @@ def get_latest_ai_memory():
                 res["best_weights"] = {}
             return res
         return None
+
+
+# V9.0: Symbol Blacklist Functions
+def blacklist_symbol(symbol: str, reason: str, hours: int = 24):
+    """Додає монету в чорний список на вказану кількість годин."""
+    from datetime import timedelta
+    now = datetime.now()
+    expires = now + timedelta(hours=hours)
+    blacklisted_at = now.strftime("%Y-%m-%d %H:%M:%S")
+    expires_at = expires.strftime("%Y-%m-%d %H:%M:%S")
+    with get_db_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO symbol_blacklist (symbol, reason, blacklisted_at, expires_at, loss_count)
+            VALUES (?, ?, ?, ?, 1)
+            ON CONFLICT(symbol) DO UPDATE SET
+                reason = excluded.reason,
+                blacklisted_at = excluded.blacklisted_at,
+                expires_at = excluded.expires_at,
+                loss_count = loss_count + 1
+            """,
+            (symbol, reason, blacklisted_at, expires_at)
+        )
+    logger.info("🚫 Blacklisted %s until %s: %s", symbol, expires_at, reason)
+
+
+def is_blacklisted(symbol: str) -> bool:
+    """Перевіряє, чи монета в чорному списку (з урахуванням expires_at)."""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db_conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) FROM symbol_blacklist WHERE symbol = ? AND expires_at > ?",
+            (symbol, now_str)
+        )
+        count = cursor.fetchone()[0]
+    return count > 0
+
+
+def get_symbol_loss_count(symbol: str, hours: int = 24) -> int:
+    """Повертає кількість збиткових угод за останні N годин для символу."""
+    from datetime import timedelta
+    cutoff = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+    with get_db_conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT COUNT(*) FROM trades
+            WHERE symbol = ? AND status IN ('LOSS', 'VIRTUAL_LOSS') AND timestamp > ?
+            """,
+            (symbol, cutoff)
+        )
+        return cursor.fetchone()[0]
+
+
+def cleanup_expired_blacklist():
+    """Видаляє прострочені записи з чорного списку."""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db_conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM symbol_blacklist WHERE expires_at <= ?", (now_str,))
+        deleted = cursor.rowcount
+    if deleted > 0:
+        logger.info("🧹 Cleaned up %d expired blacklist entries", deleted)
+    return deleted
 
 
 if __name__ == "__main__":

@@ -22,12 +22,13 @@ from telegram_notifier import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
 )
-from db_logger import init_db, log_trade, update_trade_status, get_open_trades, get_trade_by_order_id, update_breakeven_status
+from db_logger import init_db, log_trade, update_trade_status, get_open_trades, get_trade_by_order_id, update_breakeven_status, is_blacklisted, blacklist_symbol, get_symbol_loss_count, cleanup_expired_blacklist
 from ai_signal_agent import generate_ai_signal
 from quant_engine import score_setup, learn_from_trade
 from adaptive_filters import AdaptiveFilterManager
 from pnl_tracker import record_trade, get_summary
 from ops_dashboard import record_cycle, record_event, build_24h_report
+from regime_filter import check_market_regime
 from logging_config import setup_file_logging
 
 LOG_FILE = setup_file_logging("bot")
@@ -71,6 +72,9 @@ CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'active_c
 TIMEFRAME = "15m"
 MIN_CANDLES_REQUIRED = 50
 DEBUG_PAIRS = {"BEAT/USDT:USDT", "BILL/USDT:USDT"}
+
+# V9.0: Module-level daily loss counter (thread-safe via GIL)
+_daily_loss_counter = {"count": 0, "day": None}
 
 
 def format_signal(signal: dict) -> str:
@@ -866,6 +870,13 @@ def sync_open_trades(exchange, config: dict):
 
                             update_trade_status(symbol=symbol, status=status_outcome, pnl=actual_pnl, order_id=order_id)
                             print(f"[{datetime.now()}] 🎯 Угода {symbol} закрита: {status_outcome} PnL={actual_pnl:.4f} USDT")
+                            # V9.0: Auto-blacklist after loss
+                            if actual_pnl < 0:
+                                _daily_loss_counter["count"] += 1
+                                _loss_count = get_symbol_loss_count(symbol, hours=24)
+                                if _loss_count >= 2:
+                                    blacklist_symbol(symbol, f"2+ збитки за 24г (total: {_loss_count})", hours=24)
+                                    send_telegram_message(f"🚫 <b>{symbol}</b> заблоковано на 24г: {_loss_count} збитків за 24г")
                             return
                     except Exception as e:
                         print(f"[{datetime.now()}] ⚠️ Помилка fetch_closed_pnl_bybit для {symbol}: {e}")
@@ -990,6 +1001,13 @@ def sync_open_trades(exchange, config: dict):
                         record_trade(symbol, direction, entry_price, exit_price, actual_pnl)
                         trade_prefix = "🧠 Віртуальна" if is_virtual else "🎯"
                         print(f"[{datetime.now()}] {trade_prefix} угода {symbol} закрита (fallback): {status_outcome} PnL={actual_pnl:.4f} USDT")
+                        # V9.0: Auto-blacklist after loss (fallback path)
+                        if actual_pnl < 0:
+                            _daily_loss_counter["count"] += 1
+                            _loss_count = get_symbol_loss_count(symbol, hours=24)
+                            if _loss_count >= 2:
+                                blacklist_symbol(symbol, f"2+ збитки за 24г (total: {_loss_count})", hours=24)
+                                send_telegram_message(f"🚫 <b>{symbol}</b> заблоковано на 24г: {_loss_count} збитків за 24г")
                 except Exception as e_fallback:
                     print(f"[{datetime.now()}] ⚠️ Не вдалося синхронізувати угоду {symbol} через fallback: {e_fallback}")
         
@@ -1059,6 +1077,12 @@ def run_bot():
     dry_cycles_without_setups = 0
     last_health_ping = time.time()
     last_ai_signal_ping = time.time()
+    
+    # V9.0: Daily loss tracking & reflection pause
+    daily_loss_count = 0
+    daily_loss_limit = 3
+    daily_loss_halt = False
+    reflection_pause_until = 0
 
     while True:
         # Динамічно завантажуємо конфігурацію на початку кожного сканування
@@ -1078,12 +1102,61 @@ def run_bot():
             day_start_equity = equity_now
             session_start_equity = equity_now
             last_daily_report_day = day_marker
+            # V9.0: Reset daily loss tracking
+            daily_loss_count = 0
+            daily_loss_halt = False
+            _daily_loss_counter["count"] = 0
+            _daily_loss_counter["day"] = today
+            print(f"[{datetime.now()}] 🔄 Новий день — лічильники збитків скинуто")
         session_dd = ((session_start_equity - equity_now) / max(session_start_equity, 1.0)) * 100.0
         daily_dd = ((day_start_equity - equity_now) / max(day_start_equity, 1.0)) * 100.0
         if session_dd >= max_session_drawdown_pct or daily_dd >= max_daily_loss_pct:
             print(f"[{datetime.now()}] 🛑 Risk guard stop: session_dd={session_dd:.2f}% daily_dd={daily_dd:.2f}%")
             time.sleep(60)
             continue
+        
+        # V9.0: 3-Strike Daily Loss Halt
+        # Sync counter from threaded sync_open_trades
+        daily_loss_count = _daily_loss_counter["count"]
+        if daily_loss_count >= daily_loss_limit and not daily_loss_halt:
+            daily_loss_halt = True
+            send_telegram_message(f"🛑 <b>3-Strike Daily Limit!</b>\n{daily_loss_count} збитків за день. Торгівлю зупинено до 00:00 UTC.")
+        if daily_loss_halt:
+            print(f"[{datetime.now()}] 🛑 3-Strike halt active ({daily_loss_count} збитків за день). Чекаємо до 00:00 UTC.")
+            # Все одно синхронізуємо угоди (SL/TP моніторинг)
+            sync_open_trades(exchange, CONFIG)
+            time.sleep(300)
+            continue
+        
+        # V9.0: Non-blocking reflection pause
+        if time.time() < reflection_pause_until:
+            remaining = int(reflection_pause_until - time.time())
+            print(f"[{datetime.now()}] ⏸️ Reflection pause: ще {remaining}с до відновлення")
+            time.sleep(60)
+            continue
+        
+        # V9.0: Regime Filter — перевіряємо BTC перед скануванням пар
+        try:
+            regime_result = check_market_regime(exchange)
+            if not regime_result["allow_trading"]:
+                print(f"[{datetime.now()}] 🛑 Режим ринку: {regime_result['regime']} — нові входи заблоковано")
+                send_telegram_message(
+                    f"🛑 <b>Regime Filter: {regime_result['regime']}</b>\n"
+                    f"{regime_result['details']}\n"
+                    f"Нові входи заблоковано. Чекаємо 2 хвилини."
+                )
+                # Все одно синхронізуємо відкриті угоди (SL/TP моніторинг)
+                sync_open_trades(exchange, CONFIG)
+                time.sleep(120)
+                continue
+        except Exception as e_regime:
+            print(f"[{datetime.now()}] ⚠️ Помилка Regime Filter: {e_regime}")
+        
+        # V9.0: Cleanup expired blacklist entries once per cycle
+        try:
+            cleanup_expired_blacklist()
+        except Exception:
+            pass
             
         # V8.0: Autonomous Reflection Agent
         try:
@@ -1106,9 +1179,10 @@ def run_bot():
                     send_telegram_message(msg)
                     
                     if regime in ["CHOP", "VOLATILE", "MANIPULATION"]:
-                        print(f"[{datetime.now()}] 🛑 AI зупиняє торгівлю через поганий ринок на 1 годину.")
-                        time.sleep(3600)
-                        continue
+                        reflection_pause_until = time.time() + 1800  # 30 хвилин non-blocking
+                        print(f"[{datetime.now()}] 🛑 AI зупиняє торгівлю через {regime} на 30 хв (non-blocking).")
+                        send_telegram_message(f"⏸️ Reflection pause: {regime}. Пауза 30 хв.")
+                        # НЕ continue — дозволяємо sync_open_trades виконатися
         except Exception as e_refl:
             print(f"[{datetime.now()}] ⚠️ Помилка виклику Reflection Agent: {e_refl}")
 
@@ -1378,6 +1452,10 @@ def run_bot():
                     print(f"[{datetime.now()}]   Final decision (setup_found): {setup_found}")
 
                 if last_state.setup and last_state.setup.valid:
+                    # V9.0: Blacklist check before processing setup
+                    if is_blacklisted(symbol):
+                        print(f"[{datetime.now()}] 🚫 {symbol} у чорному списку — пропускаємо сетап")
+                        continue
                     if last_setup_bars[symbol] != last_state.timestamp:
                         adx_v = float(getattr(last_state, "adx", 0.0) or 0.0)
                         adx_t = float(getattr(last_state, "adx_threshold", CONFIG.get("adx_min", 12)))
