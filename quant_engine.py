@@ -39,6 +39,20 @@ DEFAULT_WEIGHTS = {
     "news_sentiment":   0.05,   # Новинний фон (CryptoPanic)
 }
 
+# V10: Обмеження ваг для захисту від дрейфу
+WEIGHT_MIN = 0.05   # Мінімум 5% — жоден фактор не ігнорується повністю
+WEIGHT_MAX = 0.25   # Максимум 25% — жоден фактор не домінує
+
+
+def _enforce_weight_bounds(weights: dict) -> dict:
+    """V10: Примусово обмежує ваги в діапазоні [WEIGHT_MIN, WEIGHT_MAX] і нормалізує."""
+    for k in weights:
+        weights[k] = max(WEIGHT_MIN, min(WEIGHT_MAX, weights[k]))
+    total = sum(weights.values())
+    if total > 0:
+        weights = {k: v / total for k, v in weights.items()}
+    return weights
+
 
 import db_logger
 
@@ -55,7 +69,8 @@ def _load_weights() -> dict:
         try:
             with open(WEIGHTS_FILE, "r") as f:
                 data = json.load(f)
-                return data.get("weights", DEFAULT_WEIGHTS)
+                w = data.get("weights", DEFAULT_WEIGHTS)
+                return _enforce_weight_bounds(w)  # V10: bounds enforcement
         except Exception:
             pass
     return DEFAULT_WEIGHTS.copy()
@@ -353,10 +368,15 @@ def score_setup(
 
     # Зважена сума
     total_score = sum(factors[k] * weights.get(k, 0.0) for k in factors)
+    
+    # V10: Session Penalty
+    if session == "Off":
+        total_score -= 0.10
+        
     total_score = _clamp(total_score)
 
     # Вердикт
-    if total_score >= 0.65:
+    if total_score >= 0.80:  # V10 threshold updated to 0.80
         verdict = "AUTO_EXECUTE"
     elif total_score >= 0.40:
         verdict = "MANUAL_CONFIRM"
@@ -428,11 +448,8 @@ def learn_from_trade(factors_snapshot: dict, outcome: str, pnl: float):
             elif factor_score < 0.3:
                 weights[factor_name] += lr * 0.2
     
-    # Нормалізуємо ваги: мінімум 0.02, сума = 1.0
-    for k in weights:
-        weights[k] = max(0.02, weights[k])
-    total = sum(weights.values())
-    weights = {k: v / total for k, v in weights.items()}
+    # V10: Нормалізуємо ваги з bounds [0.05, 0.25]
+    weights = _enforce_weight_bounds(weights)
     
     # Рахуємо статистику
     stats_file = WEIGHTS_FILE

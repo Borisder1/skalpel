@@ -1089,6 +1089,9 @@ def run_bot():
     daily_loss_limit = 3
     daily_loss_halt = False
     reflection_pause_until = 0
+    
+    # V10: Vision AI Cache {symbol: {"decision": str, "timestamp": float}}
+    _vision_cache = {}
 
     while True:
         # Динамічно завантажуємо конфігурацію на початку кожного сканування
@@ -1158,6 +1161,12 @@ def run_bot():
                     )
         except Exception as e_regime:
             print(f"[{datetime.now()}] ⚠️ Помилка Regime Filter: {e_regime}")
+        
+        # V10: Direction Bias — зберігаємо для фільтрації контр-трендових сетапів
+        try:
+            _direction_bias = regime_result.get("direction_bias", "NEUTRAL")
+        except Exception:
+            _direction_bias = "NEUTRAL"
         
         # V9.0: Cleanup expired blacklist entries once per cycle
         try:
@@ -1244,8 +1253,14 @@ def run_bot():
                     max_positions = int(CONFIG.get("max_concurrent_positions", 15))
                     max_orders = int(CONFIG.get("max_active_orders", 15))
                     
-                    if len(positions) >= max_positions or len(open_orders) >= max_orders:
-                        print(f"[{datetime.now()}] 🧠 Портфель заповнений (позицій: {len(positions)}/{max_positions}, ордерів: {len(open_orders)}/{max_orders}). Відкриваємо ВІРТУАЛЬНУ позицію для підтвердженого {symbol}")
+                    # V10: Smart Retry (Probation)
+                    import db_logger
+                    loss_count_24h = db_logger.get_symbol_loss_count(symbol, 24)
+                    is_probation = (loss_count_24h >= 2)
+                    
+                    if len(positions) >= max_positions or len(open_orders) >= max_orders or is_probation:
+                        reason_msg = "Портфель заповнений" if not is_probation else "Smart Retry (Probation)"
+                        print(f"[{datetime.now()}] 🧠 {reason_msg}. Відкриваємо ВІРТУАЛЬНУ позицію для підтвердженого {symbol}")
                         log_trade(
                             symbol=symbol,
                             direction=direction,
@@ -1463,6 +1478,16 @@ def run_bot():
                     if is_blacklisted(symbol):
                         print(f"[{datetime.now()}] 🚫 {symbol} у чорному списку — пропускаємо сетап")
                         continue
+                    # V10: Direction Bias — блокуємо контр-трендові сетапи
+                    setup_dir = "LONG" if last_state.setup.dir == 1 else "SHORT"
+                    if _direction_bias == "BULLISH" and setup_dir == "SHORT":
+                        print(f"[{datetime.now()}] 🛡️ Direction Bias: BULLISH ринок — блокуємо SHORT {symbol}")
+                        record_event("setup_blocked_by_direction_bias", {"symbol": symbol, "bias": "BULLISH", "setup": "SHORT"})
+                        continue
+                    elif _direction_bias == "BEARISH" and setup_dir == "LONG":
+                        print(f"[{datetime.now()}] 🛡️ Direction Bias: BEARISH ринок — блокуємо LONG {symbol}")
+                        record_event("setup_blocked_by_direction_bias", {"symbol": symbol, "bias": "BEARISH", "setup": "LONG"})
+                        continue
                     if last_setup_bars[symbol] != last_state.timestamp:
                         adx_v = float(getattr(last_state, "adx", 0.0) or 0.0)
                         adx_t = float(getattr(last_state, "adx_threshold", CONFIG.get("adx_min", 12)))
@@ -1571,12 +1596,21 @@ def run_bot():
                         factors_snapshot = quant_res["factors"]
                         auto_thresh = float(CONFIG.get("auto_execute_confidence_threshold", 0.65))
                         
-                        # --- V8.0: Vision AI Filter ---
+                        # --- V8.0/V10: Vision AI Filter with Cache ---
                         if conf >= auto_thresh or require_confirmation:
                             try:
                                 import vision_agent
-                                print(f"[{datetime.now()}] 👁️ Перевірка {symbol} через Vision AI (PaliGemma)...")
-                                vision_decision = vision_agent.ask_vision_oracle(df, symbol)
+                                now_ts = time.time()
+                                cached = _vision_cache.get(symbol)
+                                
+                                if cached and (now_ts - cached["timestamp"] < 900):
+                                    vision_decision = cached["decision"]
+                                    print(f"[{datetime.now()}] 👁️ Vision AI (CACHED) для {symbol}: {vision_decision}")
+                                else:
+                                    print(f"[{datetime.now()}] 👁️ Перевірка {symbol} через Vision AI (PaliGemma)...")
+                                    vision_decision = vision_agent.ask_vision_oracle(df, symbol)
+                                    _vision_cache[symbol] = {"decision": vision_decision, "timestamp": now_ts}
+
                                 if (direction == "LONG" and vision_decision == "BEARISH") or (direction == "SHORT" and vision_decision == "BULLISH"):
                                     print(f"[{datetime.now()}] 🚫 Vision AI заблокував {direction} для {symbol}. Зображення вказує на {vision_decision}.")
                                     record_event("setup_blocked_by_vision_ai", {"symbol": symbol, "vision": vision_decision})
@@ -1644,9 +1678,15 @@ def run_bot():
                         max_positions = int(CONFIG.get("max_concurrent_positions", 15))
                         max_orders = int(CONFIG.get("max_active_orders", 15))
                         
-                        if len(positions) >= max_positions or len(open_orders) >= max_orders:
+                        # V10: Smart Retry (Probation)
+                        import db_logger
+                        loss_count_24h = db_logger.get_symbol_loss_count(symbol, 24)
+                        is_probation = (loss_count_24h >= 2) # Якщо 2+ збитки за 24г — тестуємо віртуально
+                        
+                        if len(positions) >= max_positions or len(open_orders) >= max_orders or is_probation:
                             # ВІРТУАЛЬНИЙ вхід
-                            print(f"[{datetime.now()}] 🧠 Портфель заповнений (позицій: {len(positions)}/{max_positions}, ордерів: {len(open_orders)}/{max_orders}). Відкриваємо ВІРТУАЛЬНУ позицію для {symbol}")
+                            reason_msg = "Портфель заповнений" if not is_probation else "Smart Retry (Probation)"
+                            print(f"[{datetime.now()}] 🧠 {reason_msg}. Відкриваємо ВІРТУАЛЬНУ позицію для {symbol}")
                             log_trade(
                                 symbol=symbol,
                                 direction=direction,

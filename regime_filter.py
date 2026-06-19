@@ -185,6 +185,7 @@ def check_market_regime(exchange, force_refresh: bool = False) -> dict:
                 "allow_trading": True,
                 "details": "Недостатньо даних BTC для визначення режиму",
                 "adx": 0, "ema_slope": 0, "atr_ratio": 1, "wick_ratio": 0, "price_range_pct": 0,
+                "direction_bias": "NEUTRAL",
             }
             _regime_cache["result"] = result
             _regime_cache["timestamp"] = now
@@ -240,6 +241,14 @@ def check_market_regime(exchange, force_refresh: bool = False) -> dict:
             + "; ".join(reasons)
         )
 
+        # V10: Direction Bias — визначаємо переважний напрямок ринку
+        if ema_slope > 0.3:
+            direction_bias = "BULLISH"
+        elif ema_slope < -0.3:
+            direction_bias = "BEARISH"
+        else:
+            direction_bias = "NEUTRAL"
+
         result = {
             "regime": regime,
             "allow_trading": allow_trading,
@@ -249,12 +258,13 @@ def check_market_regime(exchange, force_refresh: bool = False) -> dict:
             "atr_ratio": atr_ratio,
             "wick_ratio": wick_ratio,
             "price_range_pct": price_range_pct,
+            "direction_bias": direction_bias,  # V10
         }
 
         _regime_cache["result"] = result
         _regime_cache["timestamp"] = now
 
-        print(f"[{datetime.now()}] 🌡️ {details}")
+        print(f"[{datetime.now()}] 🌡️ {details} | Bias: {direction_bias}")
         return result
 
     except Exception as e:
@@ -265,6 +275,7 @@ def check_market_regime(exchange, force_refresh: bool = False) -> dict:
             "allow_trading": True,
             "details": f"Помилка: {e}",
             "adx": 0, "ema_slope": 0, "atr_ratio": 1, "wick_ratio": 0, "price_range_pct": 0,
+            "direction_bias": "NEUTRAL",
         }
         _regime_cache["result"] = result
         _regime_cache["timestamp"] = now

@@ -28,24 +28,62 @@ def fitness(genome: dict) -> float:
         return 0.0
         
     sim_pnl = 0.0
+    wins = 0
+    losses = 0
+    gross_profit = 0.0
+    gross_loss = 0.0
+    peak_pnl = 0.0
+    max_dd = 0.0
+
     for row in trades:
         try:
             factors = json.loads(row["factors_snapshot"])
             if not factors: continue
             
-            # Simple simulation: if the trade's context was weaker than our genome threshold, skip it.
-            # (Note: factors_snapshot currently holds scores, not raw values. We will approximate)
-            # Or we can just use the genetic algorithm to evolve weights. Let's evolve weights!
-            
             pnl = float(row["pnl"])
             # Genome is a set of weights.
             total_score = sum(factors.get(k, 0) * v for k, v in genome.items())
-            if total_score > 0.65: # execution threshold
+            
+            # V10: Threshold update
+            if total_score >= 0.80: # execution threshold
                 sim_pnl += pnl
+                if pnl > 0:
+                    wins += 1
+                    gross_profit += pnl
+                else:
+                    losses += 1
+                    gross_loss += abs(pnl)
+                
+                if sim_pnl > peak_pnl:
+                    peak_pnl = sim_pnl
+                dd = peak_pnl - sim_pnl
+                if dd > max_dd:
+                    max_dd = dd
+
         except:
             continue
             
-    return sim_pnl
+    total_trades = wins + losses
+    if total_trades == 0:
+        return 0.0
+        
+    win_rate = wins / total_trades
+    profit_factor = gross_profit / max(gross_loss, 1e-5)
+    
+    # V10: Покращена фітнес-функція (Profit Factor * Win Rate Penalty * Drawdown Penalty)
+    # Якщо WR < 40% — сильний штраф
+    wr_modifier = win_rate ** 0.5
+    
+    # Drawdown penalty: якщо max_dd > 500 (наприклад), штрафуємо
+    dd_penalty = max(1.0 - (max_dd / 1000.0), 0.1)
+    
+    fitness_score = profit_factor * wr_modifier * dd_penalty * sim_pnl
+    
+    # Якщо збиткова стратегія, повертаємо 0
+    if sim_pnl < 0:
+        return 0.0
+        
+    return fitness_score
 
 def create_initial_population(base_weights: dict, size: int = 10) -> list:
     pop = []

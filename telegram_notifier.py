@@ -269,11 +269,37 @@ def send_settings_menu(token, chat_id, message_id=None):
         )
 
 def send_main_menu(token, chat_id, message_id=None):
-    text = (
-        f"🤖 *SMC Racer Dashboard*\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"Оберіть дію:"
-    )
+    # V10: Live dashboard з реальними даними
+    try:
+        import pnl_tracker
+        import db_logger
+        summary_data = pnl_tracker.load_stats()
+        trades_list = summary_data.get("trades", [])
+        total_pnl = sum(float(t.get("pnl", 0)) for t in trades_list)
+        wins = sum(1 for t in trades_list if float(t.get("pnl", 0)) > 0)
+        total = len(trades_list)
+        wr = (wins / total * 100) if total > 0 else 0
+        open_trades = db_logger.get_open_trades()
+        active_bans = db_logger.get_active_blacklist()
+        pnl_sign = "+" if total_pnl >= 0 else ""
+        pnl_emoji = "📈" if total_pnl >= 0 else "📉"
+        header = (
+            f"🤖 *SMC Racer v10 Dashboard*\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"{pnl_emoji} PnL: *{pnl_sign}{total_pnl:.2f} USDT*\n"
+            f"📊 Угод: *{total}* | WR: *{wr:.1f}%*\n"
+            f"🟢 Відкритих: *{len(open_trades)}*\n"
+            f"🚫 Банів: *{len(active_bans)}*\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"Оберіть дію:"
+        )
+    except Exception:
+        header = (
+            f"🤖 *SMC Racer v10 Dashboard*\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"Оберіть дію:"
+        )
+    
     keyboard = {
         "inline_keyboard": [
             [
@@ -282,20 +308,24 @@ def send_main_menu(token, chat_id, message_id=None):
             ],
             [
                 {"text": "⚙️ Налаштування", "callback_data": "menu_main_settings"},
-                {"text": "🧠 Що працює зараз?", "callback_data": "menu_main_ai_report"}
+                {"text": "🧠 AI Звіт", "callback_data": "menu_main_ai_report"}
+            ],
+            [
+                {"text": "🚫 Blacklist", "callback_data": "menu_main_blacklist"},
+                {"text": "🌡️ Режим Ринку", "callback_data": "menu_main_regime"}
             ]
         ]
     }
     if message_id:
         requests.post(
             f"https://api.telegram.org/bot{token}/editMessageText",
-            json={"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "Markdown", "reply_markup": keyboard},
+            json={"chat_id": chat_id, "message_id": message_id, "text": header, "parse_mode": "Markdown", "reply_markup": keyboard},
             timeout=10
         )
     else:
         requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "reply_markup": keyboard},
+            json={"chat_id": chat_id, "text": header, "parse_mode": "Markdown", "reply_markup": keyboard},
             timeout=10
         )
 def poll_telegram_callbacks(token, pending_signals):
@@ -413,6 +443,53 @@ def poll_telegram_callbacks(token, pending_signals):
                 else:
                     text = "🤷‍♂️ AI Memory поки порожня. Еволюція ще не запускалася."
 
+                requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+                    timeout=10
+                )
+            elif data == "menu_main_blacklist":
+                answer_callback(token, callback["id"], "Завантажую бан-лист...")
+                import db_logger
+                bans = db_logger.get_active_blacklist()
+                if bans:
+                    text = f"🚫 *Активні бани ({len(bans)}):*\n━━━━━━━━━━━━━━━\n"
+                    for b in bans[:15]:
+                        sym = b.get('symbol', '?').replace('/USDT:USDT', '')
+                        lvl = b.get('loss_count', 0)
+                        exp = b.get('expires_at', '?')
+                        text += f"• *{sym}* | Рівень: {lvl} | До: {exp}\n"
+                else:
+                    text = "✅ Бан-лист порожній. Всі монети дозволені."
+                requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+                    timeout=10
+                )
+            elif data == "menu_main_regime":
+                answer_callback(token, callback["id"], "Перевіряю ринок...")
+                try:
+                    from regime_filter import check_market_regime
+                    import ccxt
+                    ex = ccxt.bybit({"options": {"defaultType": "swap"}})
+                    regime = check_market_regime(ex)
+                    r_emoji = {"TREND": "📈", "CHOP": "🔀", "VOLATILE": "⚡", "MANIPULATION": "🛑"}.get(regime['regime'], "❓")
+                    bias = regime.get('direction_bias', 'NEUTRAL')
+                    b_emoji = {"BULLISH": "🟢", "BEARISH": "🔴", "NEUTRAL": "⚪"}.get(bias, "⚪")
+                    text = (
+                        f"🌡️ *Режим Ринку (BTC)*\n"
+                        f"━━━━━━━━━━━━━━━\n"
+                        f"{r_emoji} Режим: *{regime['regime']}*\n"
+                        f"{b_emoji} Bias: *{bias}*\n"
+                        f"📊 ADX: *{regime['adx']:.1f}*\n"
+                        f"📈 EMA slope: *{regime['ema_slope']:.3f}%*\n"
+                        f"⚡ ATR ratio: *{regime['atr_ratio']:.2f}*\n"
+                        f"🕯 Wick ratio: *{regime['wick_ratio']:.0%}*\n"
+                        f"━━━━━━━━━━━━━━━\n"
+                        f"Торгівля: *{'✅ Дозволено' if regime['allow_trading'] else '❌ Заблоковано'}*"
+                    )
+                except Exception as e:
+                    text = f"⚠️ Помилка: {e}"
                 requests.post(
                     f"https://api.telegram.org/bot{token}/sendMessage",
                     json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},

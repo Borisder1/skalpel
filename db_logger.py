@@ -7,6 +7,9 @@ from datetime import datetime
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trades_history.db")
 logger = logging.getLogger(__name__)
 
+# V10: Blacklist deduplication cache
+_blacklist_dedup = {}  # {symbol: last_blacklist_timestamp}
+
 def get_db_conn():
     conn = sqlite3.connect(DB_PATH, timeout=15.0)
     conn.execute("PRAGMA journal_mode=WAL;")
@@ -210,6 +213,14 @@ def blacklist_symbol(symbol: str, reason: str, hours: int = None):
     Якщо hours=None — автоматично визначає тривалість за кількістю попередніх банів:
     1-й бан: 4 години, 2-й: 12 годин, 3-й: 24 години, 4+: 48 годин.
     """
+    # V10: Дедуплікація — ігноруємо повторні бани протягом 60 секунд
+    import time as _time
+    now_ts = _time.time()
+    if symbol in _blacklist_dedup and (now_ts - _blacklist_dedup[symbol]) < 60:
+        logger.info("🔄 Blacklist dedup: %s вже додано < 60с тому — ігноруємо", symbol)
+        return {"hours": 0, "level": 0, "expires_at": "", "deduplicated": True}
+    _blacklist_dedup[symbol] = now_ts
+
     from datetime import timedelta
     now = datetime.now()
     
