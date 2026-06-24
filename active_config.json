@@ -10,8 +10,8 @@
     "confirmation_timeout_sec": 120,
     "fib_level": 0.5,
     "sl_atr_mult": 1.5,
-    "tp1_rr": 1.3,
-    "tp2_rr": 2.0,
+    "tp1_rr": 1.0,
+    "tp2_rr": 1.5,
     "risk_pct": 1.0,
     "liq_lookback": 20,
     "adx_thresh": 15,
@@ -30,5 +30,5 @@
     "max_active_orders": 15,
     "max_concurrent_positions": 15,
     "max_order_age_seconds": 7200,
-    "auto_execute_confidence_threshold": 0.80
+    "auto_execute_confidence_threshold": 0.85
 }

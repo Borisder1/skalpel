@@ -1157,7 +1157,7 @@ def run_bot():
                     CONFIG["adx_min"] = max(float(CONFIG.get("adx_min", 12)), 20.0)
                     CONFIG["vol_multiplier_min"] = max(float(CONFIG.get("vol_multiplier_min", 0.7)), 1.0)
                     CONFIG["auto_execute_confidence_threshold"] = max(
-                        float(CONFIG.get("auto_execute_confidence_threshold", 0.65)), 0.80
+                        float(CONFIG.get("auto_execute_confidence_threshold", 0.85)), 0.92
                     )
         except Exception as e_regime:
             print(f"[{datetime.now()}] ⚠️ Помилка Regime Filter: {e_regime}")

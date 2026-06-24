@@ -376,7 +376,7 @@ def score_setup(
     total_score = _clamp(total_score)
 
     # Вердикт
-    if total_score >= 0.80:  # V10 threshold updated to 0.80
+    if total_score >= 0.85:  # V10.1 threshold — ultra-selective
         verdict = "AUTO_EXECUTE"
     elif total_score >= 0.40:
         verdict = "MANUAL_CONFIRM"
