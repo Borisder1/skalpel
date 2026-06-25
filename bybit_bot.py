@@ -730,7 +730,7 @@ def sync_open_trades(exchange, config: dict):
                     trade_time_str = t.get("timestamp")
                     trade_time_dt = datetime.strptime(trade_time_str, "%Y-%m-%d %H:%M:%S")
                     age_seconds = (datetime.now() - trade_time_dt).total_seconds()
-                    if age_seconds >= 172800:  # 48 годин
+                    if age_seconds >= 28800:  # V10.1: 8 годин (замість 48)
                         print(f"[{datetime.now()}] 🧠 Віртуальна угода {symbol} застаріла ({age_seconds/3600:.1f} год). Закриваємо за таймаутом.")
                         update_trade_status(symbol=symbol, status="CANCELLED", pnl=0.0, order_id=order_id)
                         send_telegram_message(
@@ -1663,6 +1663,12 @@ def run_bot():
                             continue
                         else:
                             send_signal(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, signal_payload)
+                        
+                        # V10.1: ЖОРСТКИЙ ГЕЙТ — блокуємо ВСІ угоди зі скором нижче порогу
+                        if conf < auto_thresh:
+                            print(f"[{datetime.now()}] 🚫 Score {conf:.2f} < {auto_thresh:.2f} — {symbol} ЗАБЛОКОВАНО (hard gate)")
+                            record_event("setup_blocked_by_hard_gate", {"symbol": symbol, "score": conf, "threshold": auto_thresh})
+                            continue
                         
                         # Вхід на Демо рахунку Bybit
                         positions = get_open_positions(exchange)
