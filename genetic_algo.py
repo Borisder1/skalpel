@@ -45,7 +45,7 @@ def fitness(genome: dict) -> float:
             total_score = sum(factors.get(k, 0) * v for k, v in genome.items())
             
             # V10: Threshold update
-            if total_score >= 0.85: # execution threshold
+            if total_score >= 0.70: # execution threshold
                 sim_pnl += pnl
                 if pnl > 0:
                     wins += 1

@@ -25,18 +25,18 @@ MACRO_CACHE = {
     "last_fetched": 0.0
 }
 
-# Дефолтні ваги факторів (сума = 1.0)
+# V10.2: Ребалансовані ваги (структура > макро)
 DEFAULT_WEIGHTS = {
-    "rr_quality":       0.18,   # Risk:Reward якість
+    "rr_quality":       0.20,   # Risk:Reward якість (найважливіший)
     "volume_confirm":   0.12,   # Об'єм підтвердження
     "adx_strength":     0.12,   # ADX сила тренду
-    "fvg_size":         0.08,   # FVG розмір
-    "htf_confluence":   0.12,   # HTF конфлюенція
+    "fvg_size":         0.06,   # FVG розмір
+    "htf_confluence":   0.10,   # HTF конфлюенція
     "session_quality":  0.08,   # Якість торгової сесії
-    "smc_structure":    0.08,   # SMC структурна конфлюенція
-    "impulse_quality":  0.04,   # Імпульс свічки
-    "macro_confluence": 0.18,   # Макро конфлюенція (DXY, Oil, Gold)
-    "news_sentiment":   0.05,   # Новинний фон (CryptoPanic)
+    "smc_structure":    0.18,   # SMC структурна конфлюенція (підвищено)
+    "impulse_quality":  0.06,   # Імпульс свічки (знижено)
+    "macro_confluence": 0.04,   # Макро конфлюенція (знижено — ненадійний)
+    "news_sentiment":   0.04,   # Новинний фон
 }
 
 # V10: Обмеження ваг для захисту від дрейфу
@@ -124,9 +124,10 @@ def _score_rr_quality(entry: float, sl: float, tp1: float, tp2: float, direction
     rr1 = reward1 / risk
     rr2 = reward2 / risk
 
-    # RR1 >= 1.5 і RR2 >= 2.5 = ідеальний сетап
-    score1 = _clamp(rr1 / 2.0)          # 0-2 RR → 0.0-1.0
-    score2 = _clamp(rr2 / 4.0)          # 0-4 RR → 0.0-1.0
+    # V10.2: Калібровано під реальні TP R:R (1.0/1.5)
+    # RR1 >= 1.0 і RR2 >= 1.5 = хороший сетап
+    score1 = _clamp(rr1 / 1.5)          # 0-1.5 RR → 0.0-1.0
+    score2 = _clamp(rr2 / 2.5)          # 0-2.5 RR → 0.0-1.0
     return _clamp(score1 * 0.4 + score2 * 0.6)
 
 
@@ -143,12 +144,12 @@ def _score_adx(adx_value: float, adx_threshold: float) -> float:
     """Оцінює силу тренду через ADX."""
     if adx_value <= 0 or math.isnan(adx_value):
         return 0.0
-    # ADX > threshold = тренд. Чим більше — тим краще
+    # V10.2: Покращений діапазон (швидше росте до 1.0)
     excess = adx_value - adx_threshold
     if excess < 0:
-        return _clamp(0.2 + 0.3 * (adx_value / max(adx_threshold, 1)))
-    # excess 0-20 → 0.5-1.0
-    return _clamp(0.5 + excess / 40.0)
+        return _clamp(0.3 + 0.3 * (adx_value / max(adx_threshold, 1)))
+    # excess 0-20 → 0.6-1.0 (швидше ніж /40)
+    return _clamp(0.6 + excess / 25.0)
 
 
 def _score_fvg_size(fvg_size_atr: float, fvg_min: float) -> float:
@@ -175,12 +176,13 @@ def _score_session(session: str) -> float:
     session_scores = {
         "London": 0.9,
         "NewYork": 1.0,
-        "LondonNewYork": 1.0,  # Перетин сесій = найкращий час
-        "Tokyo": 0.6,
-        "Sydney": 0.4,
-        "Off": 0.3,
+        "LondonNewYork": 1.0,
+        "Tokyo": 0.65,
+        "Sydney": 0.55,
+        "Asia": 0.65,    # V10.2: FIX — calc_sessions() повертає "Asia", не "Tokyo"
+        "Off": 0.5,
     }
-    return session_scores.get(session, 0.3)
+    return session_scores.get(session, 0.5)
 
 
 def _score_smc_structure(bos_aligned: bool, choch_aligned: bool, ob_aligned: bool, fvg_naked: bool) -> float:
@@ -200,8 +202,8 @@ def _score_smc_structure(bos_aligned: bool, choch_aligned: bool, ob_aligned: boo
 def _score_impulse(is_impulse: bool, body_to_atr_ratio: float) -> float:
     """Оцінює якість імпульсної свічки."""
     if not is_impulse:
-        return 0.2
-    return _clamp(0.5 + body_to_atr_ratio * 0.3)
+        return 0.35  # V10.2: Піднято з 0.2 (сетап вже підтверджений racer_core)
+    return _clamp(0.6 + body_to_atr_ratio * 0.25)
 
 
 # ─── МАКРО-КОНФЛЮЕНЦІЯ (Correlation) ──────────────────────────
@@ -280,14 +282,14 @@ def _score_macro_confluence(direction: str) -> float:
         if gold == "BEAR": score += 0.3
         elif gold == "NEUTRAL": score += 0.15
         
-    # 4. BTC Market Neutrality: Сильно пеналізуємо лонги альтів, якщо BTC падає.
+    # 4. BTC Market Neutrality
     btc = macro.get("BTC", "NEUTRAL")
     if direction == "LONG" and btc == "BEAR":
-        score -= 0.5  # Дуже сильний штраф
+        score *= 0.3  # V10.2: Мультиплікатор замість від'ємного штрафу (не йде в мінус)
     elif direction == "SHORT" and btc == "BULL":
-        score -= 0.3  # Штраф за шорт проти зростаючого ринку
-        
-    return score
+        score *= 0.5
+    
+    return _clamp(score)  # V10.2: Гарантовано 0.0-1.0 (без негативу)
 
 
 # ─── ГОЛОВНА ФУНКЦІЯ СКОРИНГУ ──────────────────────────────────
@@ -350,7 +352,8 @@ def score_setup(
     elif is_long and news["status"] == "BEARISH": news_score = 0.1
     elif not is_long and news["status"] == "BULLISH": news_score = 0.1
     
-    body_to_atr = abs(entry - sl) / max(atr, 1e-10) if atr > 0 else 0.5
+    # V10.2: Виправлена метрика імпульсу (використовуємо спрощений підхід)
+    body_to_atr = 0.8 if is_impulse else 0.3
 
     # Рахуємо всі 9 факторів
     factors = {
@@ -369,14 +372,17 @@ def score_setup(
     # Зважена сума
     total_score = sum(factors[k] * weights.get(k, 0.0) for k in factors)
     
-    # V10: Session Penalty
-    if session == "Off":
-        total_score -= 0.10
+    # V10.2: Confluence Bonus — нагороджуємо сетапи з багатьма сильними факторами
+    high_factors = sum(1 for v in factors.values() if v >= 0.7)
+    if high_factors >= 6:
+        total_score += 0.10
+    elif high_factors >= 4:
+        total_score += 0.05
         
     total_score = _clamp(total_score)
 
     # Вердикт
-    if total_score >= 0.85:  # V10.1 threshold — ultra-selective
+    if total_score >= 0.70:  # V10.2: калібрований поріг
         verdict = "AUTO_EXECUTE"
     elif total_score >= 0.40:
         verdict = "MANUAL_CONFIRM"

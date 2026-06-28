@@ -71,7 +71,7 @@ API_SECRET = os.getenv("BYBIT_API_SECRET")
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'active_config.json')
 TIMEFRAME = "15m"
 MIN_CANDLES_REQUIRED = 50
-DEBUG_PAIRS = {"BEAT/USDT:USDT", "BILL/USDT:USDT"}
+DEBUG_PAIRS = set()  # V10.2: Вимкнено для продакшн (було BEAT, BILL)
 
 # V9.0: Module-level daily loss counter (thread-safe via GIL)
 _daily_loss_counter = {"count": 0, "day": None}
@@ -1157,7 +1157,7 @@ def run_bot():
                     CONFIG["adx_min"] = max(float(CONFIG.get("adx_min", 12)), 20.0)
                     CONFIG["vol_multiplier_min"] = max(float(CONFIG.get("vol_multiplier_min", 0.7)), 1.0)
                     CONFIG["auto_execute_confidence_threshold"] = max(
-                        float(CONFIG.get("auto_execute_confidence_threshold", 0.85)), 0.92
+                        float(CONFIG.get("auto_execute_confidence_threshold", 0.70)), 0.80
                     )
         except Exception as e_regime:
             print(f"[{datetime.now()}] ⚠️ Помилка Regime Filter: {e_regime}")

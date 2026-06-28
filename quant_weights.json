@@ -1,21 +1,21 @@
 {
   "weights": {
-    "rr_quality": 0.14089789875893038,
-    "volume_confirm": 0.10198681604654634,
-    "adx_strength": 0.080005051699515,
-    "fvg_size": 0.03857290369241597,
-    "htf_confluence": 0.05345664834597269,
-    "session_quality": 0.06112492135874491,
-    "smc_structure": 0.14010573797832948,
-    "impulse_quality": 0.12324837612315756,
-    "macro_confluence": 0.17596826479703948,
-    "news_sentiment": 0.0846333811993481
+    "rr_quality": 0.20,
+    "volume_confirm": 0.12,
+    "adx_strength": 0.12,
+    "fvg_size": 0.06,
+    "htf_confluence": 0.10,
+    "session_quality": 0.08,
+    "smc_structure": 0.18,
+    "impulse_quality": 0.06,
+    "macro_confluence": 0.04,
+    "news_sentiment": 0.04
   },
-  "updated_at": "2026-06-11T23:53:55.347708",
+  "updated_at": "2026-06-28T23:24:00",
   "stats": {
     "total_learned": 0,
-    "last_learn": "2026-06-11T23:53:55.347700",
-    "type": "GENETIC_EVOLUTION",
+    "last_learn": "2026-06-28T23:24:00",
+    "type": "V10.2_REBALANCED",
     "simulated_pnl": 0.0
   }
 }
