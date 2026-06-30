@@ -1889,6 +1889,10 @@ def run_bot():
             except Exception as ae:
                 print(f"Помилка запуску консенсусу агентів: {ae}")
 
+        # V10.2: Очищення пам'яті для уникнення OOM на Render
+        import gc
+        gc.collect()
+
         # Пауза 60 сек між повними колами сканування ринку
         time.sleep(60)
 
