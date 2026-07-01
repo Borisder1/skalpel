@@ -61,7 +61,7 @@ def _load_weights() -> dict:
     try:
         mem = db_logger.get_latest_ai_memory()
         if mem and mem.get("best_weights"):
-            return mem["best_weights"]
+            return _enforce_weight_bounds(mem["best_weights"])  # V11: bounds enforcement і для DB
     except Exception as e:
         print(f"[QuantEngine] Помилка завантаження ваг з БД: {e}")
         
@@ -372,12 +372,12 @@ def score_setup(
     # Зважена сума
     total_score = sum(factors[k] * weights.get(k, 0.0) for k in factors)
     
-    # V10.2: Confluence Bonus — нагороджуємо сетапи з багатьма сильними факторами
-    high_factors = sum(1 for v in factors.values() if v >= 0.7)
+    # V11: Confluence Bonus — тільки для справді виняткових сетапів
+    high_factors = sum(1 for v in factors.values() if v >= 0.85)
     if high_factors >= 6:
-        total_score += 0.10
-    elif high_factors >= 4:
         total_score += 0.05
+    elif high_factors >= 4:
+        total_score += 0.03
         
     total_score = _clamp(total_score)
 

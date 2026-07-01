@@ -1413,6 +1413,11 @@ def run_bot():
                 htf_df = pd.DataFrame(raw_4h, columns=["timestamp", "open", "high", "low", "close", "volume"])
                 htf_df["timestamp"] = pd.to_datetime(htf_df["timestamp"], unit="ms", utc=True)
                 
+                # V11: Downcast float64 → float32 (зменшує RAM ~50%)
+                for _col in ["open", "high", "low", "close", "volume"]:
+                    df[_col] = df[_col].astype(np.float32)
+                    htf_df[_col] = htf_df[_col].astype(np.float32)
+                
                 if len(df) < MIN_CANDLES_REQUIRED or len(htf_df) < MIN_CANDLES_REQUIRED:
                     print(f"[{datetime.now()}] ⚠️ Пропускаємо {symbol}: мало свічок")
                     continue
@@ -1596,34 +1601,45 @@ def run_bot():
                         factors_snapshot = quant_res["factors"]
                         auto_thresh = float(CONFIG.get("auto_execute_confidence_threshold", 0.65))
                         
-                        # --- V8.0/V10: Vision AI Filter with Cache ---
-                        if conf >= auto_thresh or require_confirmation:
-                            try:
-                                import vision_agent
-                                now_ts = time.time()
-                                cached = _vision_cache.get(symbol)
-                                
-                                if cached and (now_ts - cached["timestamp"] < 900):
-                                    vision_decision = cached["decision"]
-                                    print(f"[{datetime.now()}] 👁️ Vision AI (CACHED) для {symbol}: {vision_decision}")
-                                else:
-                                    print(f"[{datetime.now()}] 👁️ Перевірка {symbol} через Vision AI (PaliGemma)...")
-                                    vision_decision = vision_agent.ask_vision_oracle(df, symbol)
-                                    _vision_cache[symbol] = {"decision": vision_decision, "timestamp": now_ts}
+                        # V11: ЖОРСТКИЙ ГЕЙТ — перевіряємо RAW score ПЕРЕД Vision AI та Telegram
+                        if conf < auto_thresh:
+                            print(f"[{datetime.now()}] 🚫 Score {conf:.2f} < {auto_thresh:.2f} — {symbol} ЗАБЛОКОВАНО (hard gate)")
+                            record_event("setup_blocked_by_hard_gate", {"symbol": symbol, "score": conf, "threshold": auto_thresh})
+                            continue
+                        
+                        # --- V11: Vision AI Filter (ПІСЛЯ hard gate, ДО Telegram) ---
+                        try:
+                            import vision_agent
+                            now_ts = time.time()
+                            cached = _vision_cache.get(symbol)
+                            
+                            # V11: Ліміт vision cache (OOM prevention)
+                            if len(_vision_cache) > 200:
+                                oldest = sorted(_vision_cache, key=lambda k: _vision_cache[k]["timestamp"])[:100]
+                                for k in oldest:
+                                    del _vision_cache[k]
+                            
+                            if cached and (now_ts - cached["timestamp"] < 900):
+                                vision_decision = cached["decision"]
+                                print(f"[{datetime.now()}] 👁️ Vision AI (CACHED) для {symbol}: {vision_decision}")
+                            else:
+                                print(f"[{datetime.now()}] 👁️ Перевірка {symbol} через Vision AI (PaliGemma)...")
+                                vision_decision = vision_agent.ask_vision_oracle(df, symbol)
+                                _vision_cache[symbol] = {"decision": vision_decision, "timestamp": now_ts}
 
-                                if (direction == "LONG" and vision_decision == "BEARISH") or (direction == "SHORT" and vision_decision == "BULLISH"):
-                                    print(f"[{datetime.now()}] 🚫 Vision AI заблокував {direction} для {symbol}. Зображення вказує на {vision_decision}.")
-                                    record_event("setup_blocked_by_vision_ai", {"symbol": symbol, "vision": vision_decision})
-                                    continue
-                                elif (direction == "LONG" and vision_decision == "BULLISH") or (direction == "SHORT" and vision_decision == "BEARISH"):
-                                    conf = min(0.99, conf + 0.15) # Bonus for visual confirmation
-                                    rationale += f" | 👁️ Vision AI підтверджує {vision_decision}."
-                                    factors_snapshot["vision_score"] = 0.15
-                                else:
-                                    rationale += f" | 👁️ Vision AI: NEUTRAL."
-                                    factors_snapshot["vision_score"] = 0.0
-                            except Exception as e_vision:
-                                print(f"[{datetime.now()}] ⚠️ Помилка Vision AI: {e_vision}")
+                            if (direction == "LONG" and vision_decision == "BEARISH") or (direction == "SHORT" and vision_decision == "BULLISH"):
+                                print(f"[{datetime.now()}] 🚫 Vision AI заблокував {direction} для {symbol}. Зображення вказує на {vision_decision}.")
+                                record_event("setup_blocked_by_vision_ai", {"symbol": symbol, "vision": vision_decision})
+                                continue
+                            elif (direction == "LONG" and vision_decision == "BULLISH") or (direction == "SHORT" and vision_decision == "BEARISH"):
+                                conf = min(0.95, conf * 1.05) # V11: Мультиплікатор замість +0.15
+                                rationale += f" | 👁️ Vision AI підтверджує {vision_decision}."
+                                factors_snapshot["vision_score"] = round(conf - quant_res["score"], 3)
+                            else:
+                                rationale += f" | 👁️ Vision AI: NEUTRAL."
+                                factors_snapshot["vision_score"] = 0.0
+                        except Exception as e_vision:
+                            print(f"[{datetime.now()}] ⚠️ Помилка Vision AI: {e_vision}")
 
                         
                         signal_payload["quant_score"] = conf
@@ -1663,12 +1679,6 @@ def run_bot():
                             continue
                         else:
                             send_signal(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, signal_payload)
-                        
-                        # V10.1: ЖОРСТКИЙ ГЕЙТ — блокуємо ВСІ угоди зі скором нижче порогу
-                        if conf < auto_thresh:
-                            print(f"[{datetime.now()}] 🚫 Score {conf:.2f} < {auto_thresh:.2f} — {symbol} ЗАБЛОКОВАНО (hard gate)")
-                            record_event("setup_blocked_by_hard_gate", {"symbol": symbol, "score": conf, "threshold": auto_thresh})
-                            continue
                         
                         # Вхід на Демо рахунку Bybit
                         positions = get_open_positions(exchange)
