@@ -15,8 +15,12 @@ def _parse_iso(ts: str) -> datetime:
 
 def load_ops():
     if os.path.exists(OPS_FILE):
-        with open(OPS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(OPS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            print(f"⚠️ {OPS_FILE} пошкоджено. Створюємо новий.")
+            return {"cycles": [], "events": []}
     return {"cycles": [], "events": []}
 
 
