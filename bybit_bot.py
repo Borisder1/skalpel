@@ -865,6 +865,12 @@ def sync_open_trades(exchange, config: dict):
                                     factors_snap = json.loads(factors_str)
                                     if factors_snap and status_outcome in ("WIN", "LOSS"):
                                         learn_from_trade(factors_snap, status_outcome, actual_pnl)
+                                        # V11 Phase 8: Record for active features
+                                        import feature_manager
+                                        is_win = (status_outcome == "WIN")
+                                        for fname in feature_manager.manager.features.keys():
+                                            if feature_manager.manager.is_enabled(fname):
+                                                feature_manager.manager.record_result(fname, is_win)
                                 except Exception as e_learn:
                                     print(f"[{datetime.now()}] ⚠️ Не вдалося запустити learn_from_trade: {e_learn}")
 
@@ -1030,6 +1036,7 @@ def run_bot():
     
     # Ініціалізуємо БД
     init_db()
+    import feature_manager
     
     startup_config = load_dynamic_config()
     max_daily_loss_pct = float(startup_config.get("max_daily_loss_pct", MAX_DAILY_LOSS_PCT))
@@ -1898,6 +1905,13 @@ def run_bot():
                 last_agents_run = time.time()
             except Exception as ae:
                 print(f"Помилка запуску консенсусу агентів: {ae}")
+
+        # V11 Phase 8: Adaptive Feature System - Evaluate features
+        try:
+            import feature_manager
+            feature_manager.manager.evaluate_features()
+        except Exception as ef:
+            print(f"[{datetime.now()}] ⚠️ Помилка оцінки фіч: {ef}")
 
         # V10.2: Очищення пам'яті для уникнення OOM на Render
         import gc

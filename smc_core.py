@@ -13,7 +13,7 @@ from typing import Optional
 # DATA CLASSES
 # ===========================================================================
 
-@dataclass
+@dataclass(slots=True)
 class OrderBlock:
     valid: bool = False
     bullish: bool = True
@@ -25,7 +25,7 @@ class OrderBlock:
     already_traded: bool = False
 
 
-@dataclass
+@dataclass(slots=True)
 class LiquidityState:
     swept_high: bool = False
     swept_low: bool = False
@@ -34,7 +34,7 @@ class LiquidityState:
     bar_index: int = -1
 
 
-@dataclass
+@dataclass(slots=True)
 class StructureState:
     last_swing_high: float = np.nan
     last_swing_low: float = np.nan
@@ -46,12 +46,12 @@ class StructureState:
     choch_bear: bool = False
 
 
-@dataclass
+@dataclass(slots=True)
 class ImbalanceModel:
     stage: str = "Waiting"
 
 
-@dataclass
+@dataclass(slots=True)
 class CandleSignals:
     bull_engulf: bool = False
     bear_engulf: bool = False
@@ -69,7 +69,7 @@ class CandleSignals:
         return self.bear_engulf or self.shooting_star or self.evening_star
 
 
-@dataclass
+@dataclass(slots=True)
 class BarState:
     i: int = 0
     timestamp: pd.Timestamp = None
@@ -386,9 +386,10 @@ def analyze(
         bar.imbalance_ok = imb_ratio >= imbalance_threshold and bar.vol_ma > 0
 
         # ── COPY STATE ───────────────────────────────────────────
-        bar.ob = copy.deepcopy(ob)
-        bar.liq = copy.deepcopy(liq)
-        bar.structure = copy.deepcopy(structure)
+        import dataclasses
+        bar.ob = dataclasses.replace(ob)
+        bar.liq = dataclasses.replace(liq)
+        bar.structure = dataclasses.replace(structure)
         bar.candles = cs
 
         states.append(bar)

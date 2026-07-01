@@ -69,7 +69,7 @@ def calc_dmi(df: pd.DataFrame, period: int = 14):
             
     return plus_di, minus_di, adx
 
-@dataclass
+@dataclass(slots=True)
 class Setup:
     valid: bool = False
     dir: int = 0
@@ -79,7 +79,7 @@ class Setup:
     tp2: float = np.nan
     born_bar: int = -1
 
-@dataclass
+@dataclass(slots=True)
 class RacerBar:
     i: int
     timestamp: pd.Timestamp
@@ -264,7 +264,8 @@ def analyze_racer(df: pd.DataFrame, htf_df: pd.DataFrame, config: dict):
         if current_setup.valid and i - current_setup.born_bar > 15:
             current_setup = Setup()
             
-        bar.setup = copy.deepcopy(current_setup)
+        import dataclasses
+        bar.setup = dataclasses.replace(current_setup)
         bars.append(bar)
         
     return bars

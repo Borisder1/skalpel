@@ -187,15 +187,32 @@ def _score_session(session: str) -> float:
 
 def _score_smc_structure(bos_aligned: bool, choch_aligned: bool, ob_aligned: bool, fvg_naked: bool) -> float:
     """Оцінює якість SMC структури."""
+    import feature_manager
     score = 0.0
-    if bos_aligned:
-        score += 0.35
-    if choch_aligned:
-        score += 0.25
-    if ob_aligned:
-        score += 0.25
-    if fvg_naked:
-        score += 0.15
+    
+    if feature_manager.manager.is_enabled("smc_quality_grading"):
+        # Phase 7.1: Advanced Grading A+/A/B/C
+        if bos_aligned and ob_aligned and fvg_naked:
+            score += 0.45  # A: Full setup
+        elif choch_aligned and fvg_naked:
+            score += 0.40
+        else:
+            if bos_aligned: score += 0.30
+            if choch_aligned: score += 0.25
+            if ob_aligned: score += 0.20
+            if fvg_naked: score += 0.15
+        # 1.2x multiplier for sweep + choch combo if implemented
+    else:
+        # Standard grading
+        if bos_aligned:
+            score += 0.35
+        if choch_aligned:
+            score += 0.25
+        if ob_aligned:
+            score += 0.25
+        if fvg_naked:
+            score += 0.15
+            
     return _clamp(score)
 
 
