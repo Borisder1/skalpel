@@ -717,6 +717,17 @@ def sync_open_trades(exchange, config: dict):
             direction = t.get("direction")
             order_id = t.get("order_id")
             entry_price = t.get("entry_price")
+            # V11: entry_price може бути bytes через numpy.float32 баг
+            if entry_price is not None:
+                try:
+                    entry_price = float(entry_price)
+                except (TypeError, ValueError):
+                    if isinstance(entry_price, bytes):
+                        import struct
+                        try: entry_price = struct.unpack('f', entry_price)[0]
+                        except: entry_price = 0.0
+                    else:
+                        entry_price = 0.0
             
             if not symbol:
                 return
@@ -911,13 +922,24 @@ def sync_open_trades(exchange, config: dict):
                             # Немає свічок, які покривають період після відкриття угоди, чекаємо наступного циклу
                             return
                             
-                        tp1 = t.get("take_profit_1") or (entry_price * 1.02 if direction == "LONG" else entry_price * 0.98)
-                        tp2 = t.get("take_profit_2") or (entry_price * 1.05 if direction == "LONG" else entry_price * 0.95)
+                        # V11: safe float conversion (existing records may have bytes from numpy.float32 bug)
+                        def _safe_float(val, default):
+                            if val is None: return float(default)
+                            try: return float(val)
+                            except (TypeError, ValueError):
+                                if isinstance(val, bytes):
+                                    import struct
+                                    try: return struct.unpack('f', val)[0]
+                                    except: return float(default)
+                                return float(default)
+                        
+                        tp1 = _safe_float(t.get("take_profit_1"), entry_price * 1.02 if direction == "LONG" else entry_price * 0.98)
+                        tp2 = _safe_float(t.get("take_profit_2"), entry_price * 1.05 if direction == "LONG" else entry_price * 0.95)
                         
                         # Поточний статус безубитку та Stop Loss
                         breakeven_activated = bool(t.get("breakeven_activated", 0) == 1)
-                        sl_initial = t.get("stop_loss") or (entry_price * 0.98 if direction == "LONG" else entry_price * 1.02)
-                        sl_current = entry_price if breakeven_activated else sl_initial
+                        sl_initial = _safe_float(t.get("stop_loss"), entry_price * 0.98 if direction == "LONG" else entry_price * 1.02)
+                        sl_current = float(entry_price) if breakeven_activated else sl_initial
                         
                         reached_tp1 = False
                         reached_tp2 = False

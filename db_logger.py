@@ -93,6 +93,14 @@ def log_trade(symbol: str, direction: str, entry: float, sl: float, tp1: float, 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     factors_json = json.dumps(factors_snapshot) if factors_snapshot else None
     initial_status = "VIRTUAL_OPEN" if order_id and order_id.startswith("VIRTUAL_") else "OPEN"
+    # V11: Конвертуємо numpy.float32 в Python float (інакше SQLite зберігає як BLOB)
+    entry = float(entry) if entry is not None else 0.0
+    sl = float(sl) if sl is not None else 0.0
+    tp1 = float(tp1) if tp1 is not None else 0.0
+    tp2 = float(tp2) if tp2 is not None else 0.0
+    fib = float(fib) if fib is not None else 0.0
+    sl_mult = float(sl_mult) if sl_mult is not None else 0.0
+    quant_score = float(quant_score) if quant_score is not None else None
     with get_db_conn() as conn:
         conn.execute(
             """
