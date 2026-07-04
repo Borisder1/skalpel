@@ -2,7 +2,9 @@ import json
 import os
 import time
 
-FEATURES_FILE = "features.json"
+# V11: Persistent Disk
+_data_dir = "/data" if os.path.isdir("/data") else "."
+FEATURES_FILE = os.path.join(_data_dir, "features.json")
 
 DEFAULT_FEATURES = {
     "new_listing_filter": {"enabled": True, "shadow": False, "win": 0, "loss": 0, "desc": "Phase 2: Filter coins < 14 days old"},

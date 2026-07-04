@@ -3,7 +3,9 @@ import json
 import os
 
 def main():
-    db_path = "trades_history.db"
+    # V11: Persistent Disk
+    _data_dir = "/data" if os.path.isdir("/data") else "."
+    db_path = os.path.join(_data_dir, "trades_history.db")
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
@@ -146,7 +148,7 @@ def main():
             print(f"  {row[0]} | Угод: {row[1]:<4} | W: {row[2] or 0} L: {row[3] or 0} | PnL: {row[4] or 0.0} | WR: {wr:.0f}%")
 
     # 8. Feature Manager Status
-    features_file = "features.json"
+    features_file = os.path.join(_data_dir, "features.json")
     if os.path.exists(features_file):
         try:
             with open(features_file, "r") as f:

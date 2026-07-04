@@ -2,13 +2,31 @@ import logging
 import os
 import sqlite3
 import json
+import numpy as np
 from datetime import datetime
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trades_history.db")
+# V11: Persistent Disk — якщо /data існує, зберігаємо БД там (переживає рестарти Render)
+_data_dir = "/data" if os.path.isdir("/data") else os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(_data_dir, "trades_history.db")
 logger = logging.getLogger(__name__)
 
 # V10: Blacklist deduplication cache
 _blacklist_dedup = {}  # {symbol: last_blacklist_timestamp}
+
+
+def _sanitize_for_json(obj):
+    """V11: Конвертує numpy типи в Python native для JSON серіалізації."""
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    elif isinstance(obj, (np.floating, np.float32, np.float64)):
+        return float(obj)
+    elif isinstance(obj, (np.integer, np.int32, np.int64)):
+        return int(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return obj
 
 def get_db_conn():
     conn = sqlite3.connect(DB_PATH, timeout=15.0)
@@ -91,7 +109,7 @@ def init_db():
 def log_trade(symbol: str, direction: str, entry: float, sl: float, tp1: float, tp2: float, fib: float, sl_mult: float, order_id: str = None, quant_score: float = None, factors_snapshot: dict = None):
     """Записує нову угоду в БД."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    factors_json = json.dumps(factors_snapshot) if factors_snapshot else None
+    factors_json = json.dumps(_sanitize_for_json(factors_snapshot)) if factors_snapshot else None
     initial_status = "VIRTUAL_OPEN" if order_id and order_id.startswith("VIRTUAL_") else "OPEN"
     # V11: Конвертуємо numpy.float32 в Python float (інакше SQLite зберігає як BLOB)
     entry = float(entry) if entry is not None else 0.0

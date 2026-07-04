@@ -2,7 +2,22 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 
-OPS_FILE = "ops_dashboard.json"
+# V11: Persistent Disk
+_data_dir = "/data" if os.path.isdir("/data") else "."
+OPS_FILE = os.path.join(_data_dir, "ops_dashboard.json")
+
+
+class _NumpyEncoder(json.JSONEncoder):
+    """V11: Handles numpy float32/int types for JSON serialization."""
+    def default(self, obj):
+        try:
+            import numpy as np
+            if isinstance(obj, (np.floating,)): return float(obj)
+            if isinstance(obj, (np.integer,)): return int(obj)
+            if isinstance(obj, np.ndarray): return obj.tolist()
+        except ImportError:
+            pass
+        return super().default(obj)
 
 
 def _now_iso() -> str:
@@ -26,7 +41,8 @@ def load_ops():
 
 def save_ops(data):
     with open(OPS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+        json.dump(data, f, indent=2, ensure_ascii=False, cls=_NumpyEncoder)
+
 
 
 def record_cycle(cycle_data: dict):
