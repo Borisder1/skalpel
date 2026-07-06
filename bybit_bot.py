@@ -1025,6 +1025,15 @@ def sync_open_trades(exchange, config: dict):
                                 learned_outcome = "WIN" if "WIN" in status_outcome else "LOSS"
                                 if factors_snap and learned_outcome in ("WIN", "LOSS"):
                                     learn_from_trade(factors_snap, learned_outcome, actual_pnl)
+                                    # V11 Phase 8: Record for adaptive features (fallback/virtual path)
+                                    try:
+                                        import feature_manager
+                                        is_win = (learned_outcome == "WIN")
+                                        for fname in feature_manager.manager.features.keys():
+                                            if feature_manager.manager.is_enabled(fname):
+                                                feature_manager.manager.record_result(fname, is_win)
+                                    except Exception:
+                                        pass
                             except Exception as e_learn:
                                 print(f"[{datetime.now()}] ⚠️ Не вдалося запустити learn_from_trade (fallback): {e_learn}")
 
