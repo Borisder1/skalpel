@@ -498,13 +498,14 @@ def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pc
         # FIXED: анти-дубль ордера по одному символу.
         if (now_ts - last_order_times.get(symbol, 0.0)) < MIN_ORDER_INTERVAL_SEC:
             return None
+        # V11.1: Market Order замість Limit — зменшує кількість CANCELLED
         order = safe_api_call(
             exchange.create_order,
             symbol=symbol,
-            type='limit',
+            type='market',
             side=side,
             amount=float(qty_str),
-            price=float(price_str),
+            price=None,
             params=params
         )
         if not order:
@@ -516,9 +517,9 @@ def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pc
         last_order_times[symbol] = now_ts
         
         send_telegram_message(
-            f"🛒 <b>ОРДЕР ВИСТАВЛЕНО НА DEMO</b>\n"
+            f"🛒 <b>ОРДЕР ВИКОНАНО НА DEMO (Market)</b>\n"
             f"Монета: <b>{symbol}</b> | Напрямок: <b>{direction}</b>\n"
-            f"Вхід (Limit): <b>{price_str}</b>\n"
+            f"Ціна: <b>~{price_str}</b> (Market)\n"
             f"Об'єм: <b>{qty_str}</b>\n"
             f"Stop Loss: <b>{sl:.4f}</b> | Take Profit 2: <b>{tp2:.4f}</b>\n"
             f"ID ордера: <code>{order.get('id', 'N/A')}</code>"
@@ -1130,6 +1131,27 @@ def run_bot():
     
     # V10: Vision AI Cache {symbol: {"decision": str, "timestamp": float}}
     _vision_cache = {}
+    
+    # V11.1: WR-based CHOP throttle
+    _chop_throttle_until = 0.0
+    def _check_recent_wr():
+        """Перевіряє WR за останні 2 години. Якщо < 50%, повертає True (тротл)."""
+        try:
+            from db_logger import get_db_conn
+            with get_db_conn() as conn:
+                row = conn.execute(
+                    "SELECT SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as w, COUNT(*) as t "
+                    "FROM trades WHERE status IN ('WIN','LOSS','VIRTUAL_WIN','VIRTUAL_LOSS') "
+                    "AND timestamp >= datetime('now', '-2 hours')"
+                ).fetchone()
+                if row and row[1] and row[1] >= 6:
+                    wr = (row[0] or 0) / row[1]
+                    if wr < 0.50:
+                        print(f"[{datetime.now()}] ⚠️ WR за 2 години: {wr*100:.0f}% ({row[0] or 0}W/{row[1]}T) — тротлінг 10хв")
+                        return True
+        except Exception:
+            pass
+        return False
 
     while True:
         # Динамічно завантажуємо конфігурацію на початку кожного сканування
@@ -1169,6 +1191,24 @@ def run_bot():
         if time.time() < reflection_pause_until:
             remaining = int(reflection_pause_until - time.time())
             print(f"[{datetime.now()}] ⏸️ Reflection pause: ще {remaining}с до відновлення")
+            time.sleep(60)
+            continue
+        
+        # V11.1: WR-based CHOP throttle — пауза при поганому WR
+        if time.time() < _chop_throttle_until:
+            remaining = int(_chop_throttle_until - time.time())
+            print(f"[{datetime.now()}] ⏸️ CHOP throttle: ще {remaining}с до відновлення")
+            sync_open_trades(exchange, CONFIG)
+            time.sleep(60)
+            continue
+        if _check_recent_wr():
+            _chop_throttle_until = time.time() + 600  # 10 хвилин паузи
+            send_telegram_message(
+                f"⚠️ <b>CHOP Throttle активовано</b>\n"
+                f"WR за 2 години < 50% — пауза 10 хвилин.\n"
+                f"Синхронізація існуючих угод продовжується."
+            )
+            sync_open_trades(exchange, CONFIG)
             time.sleep(60)
             continue
         
@@ -1521,16 +1561,15 @@ def run_bot():
                     if is_blacklisted(symbol):
                         print(f"[{datetime.now()}] 🚫 {symbol} у чорному списку — пропускаємо сетап")
                         continue
-                    # V10: Direction Bias — блокуємо контр-трендові сетапи
+                    # V11.1: Direction Bias — дозволяємо SHORT/LONG, але з підвищеним порогом
                     setup_dir = "LONG" if last_state.setup.dir == 1 else "SHORT"
+                    _counter_trend = False
                     if _direction_bias == "BULLISH" and setup_dir == "SHORT":
-                        print(f"[{datetime.now()}] 🛡️ Direction Bias: BULLISH ринок — блокуємо SHORT {symbol}")
-                        record_event("setup_blocked_by_direction_bias", {"symbol": symbol, "bias": "BULLISH", "setup": "SHORT"})
-                        continue
+                        _counter_trend = True
+                        print(f"[{datetime.now()}] ⚠️ Контр-тренд: BULLISH ринок + SHORT {symbol} — підвищуємо поріг")
                     elif _direction_bias == "BEARISH" and setup_dir == "LONG":
-                        print(f"[{datetime.now()}] 🛡️ Direction Bias: BEARISH ринок — блокуємо LONG {symbol}")
-                        record_event("setup_blocked_by_direction_bias", {"symbol": symbol, "bias": "BEARISH", "setup": "LONG"})
-                        continue
+                        _counter_trend = True
+                        print(f"[{datetime.now()}] ⚠️ Контр-тренд: BEARISH ринок + LONG {symbol} — підвищуємо поріг")
                     if last_setup_bars[symbol] != last_state.timestamp:
                         adx_v = float(getattr(last_state, "adx", 0.0) or 0.0)
                         adx_t = float(getattr(last_state, "adx_threshold", CONFIG.get("adx_min", 12)))
@@ -1638,6 +1677,10 @@ def run_bot():
                         rationale = quant_res["rationale"]
                         factors_snapshot = quant_res["factors"]
                         auto_thresh = float(CONFIG.get("auto_execute_confidence_threshold", 0.65))
+                        # V11.1: Контр-трендові угоди потребують вищий score
+                        if _counter_trend:
+                            auto_thresh = min(0.95, auto_thresh + 0.10)
+                            print(f"[{datetime.now()}] ⚠️ Контр-тренд поріг: {auto_thresh:.2f} для {symbol}")
                         
                         # V11: ЖОРСТКИЙ ГЕЙТ — перевіряємо RAW score ПЕРЕД Vision AI та Telegram
                         if conf < auto_thresh:
