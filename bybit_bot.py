@@ -68,7 +68,19 @@ load_dotenv()
 API_KEY = os.getenv("BYBIT_API_KEY")
 API_SECRET = os.getenv("BYBIT_API_SECRET")
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'active_config.json')
+# V11.2: Persistent Disk для конфігу
+_data_dir = "/data" if os.path.isdir("/data") else os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(_data_dir, 'active_config.json')
+
+_script_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'active_config.json')
+if CONFIG_PATH != _script_config and not os.path.exists(CONFIG_PATH) and os.path.exists(_script_config):
+    try:
+        import shutil
+        shutil.copy(_script_config, CONFIG_PATH)
+        print(f"[{datetime.now()}] 🛠 Скопійовано active_config.json до persistent disk: {CONFIG_PATH}")
+    except Exception as e:
+        print(f"[{datetime.now()}] ⚠️ Не вдалося скопіювати active_config.json до /data: {e}")
+
 TIMEFRAME = "15m"
 MIN_CANDLES_REQUIRED = 50
 DEBUG_PAIRS = set()  # V10.2: Вимкнено для продакшн (було BEAT, BILL)
@@ -690,18 +702,132 @@ def set_bybit_position_sl(exchange, symbol, direction, new_sl):
         print(f"[{datetime.now()}] ⚠️ Не вдалося встановити SL для {symbol} на Bybit: {e}")
         return None
 
+def manage_active_positions(exchange, positions: list, config: dict) -> list:
+    """
+    V11.2: Активний менеджер позицій на Bybit.
+    Перевіряє:
+    1) Збиток <= -$300 (або max_position_loss_usd)
+    2) Прибуток >= +20% від об'єму (notional size)
+    3) Таймаут 4 години (14400 секунд)
+    Повертає список символів, які були закриті.
+    """
+    closed_symbols = []
+    if not positions:
+        return closed_symbols
+
+    for pos in positions:
+        try:
+            symbol = pos.get("symbol")
+            if not symbol:
+                continue
+            
+            contracts = float(pos.get("contracts") or pos.get("info", {}).get("size") or 0.0)
+            entry_price = float(pos.get("entryPrice") or pos.get("info", {}).get("entryPrice") or 0.0)
+            unrealized_pnl = float(pos.get("unrealizedPnl") or pos.get("info", {}).get("unrealisedPnl") or 0.0)
+            side = str(pos.get("side") or pos.get("info", {}).get("side", "")).lower()
+            
+            if contracts <= 0 or entry_price <= 0:
+                continue
+                
+            position_notional = contracts * entry_price
+            
+            # Параметри з конфігу (з дефолтами)
+            max_loss_usd = float(config.get("max_position_loss_usd", 300.0))
+            take_profit_pct = float(config.get("take_profit_pct_of_size", 20.0))
+            max_age_seconds = float(config.get("max_position_age_seconds", 14400.0))
+            
+            should_close = False
+            close_reason = ""
+            
+            # 1. Перевіряємо жорсткий стоп по сумі
+            if unrealized_pnl <= -max_loss_usd:
+                should_close = True
+                close_reason = f"збиток {unrealized_pnl:.2f} USDT <= -{max_loss_usd} USDT"
+                
+            # 2. Перевіряємо фіксацію прибутку (+20%)
+            elif position_notional > 0 and (unrealized_pnl / position_notional) * 100.0 >= take_profit_pct:
+                should_close = True
+                close_reason = f"прибуток {unrealized_pnl:.2f} USDT >= {take_profit_pct}% від об'єму ({position_notional:.2f} USDT)"
+                
+            # 3. Перевіряємо таймаут (4 години)
+            else:
+                age_seconds = None
+                # Спочатку шукаємо відкриту угоду в нашій БД
+                try:
+                    from db_logger import get_db_conn
+                    with get_db_conn() as conn:
+                        row = conn.execute(
+                            "SELECT timestamp FROM trades WHERE symbol = ? AND status = 'OPEN' ORDER BY id DESC LIMIT 1",
+                            (symbol,)
+                        ).fetchone()
+                        if row:
+                            trade_time = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+                            age_seconds = (datetime.now() - trade_time).total_seconds()
+                except Exception as e_db:
+                    print(f"[{datetime.now()}] ⚠️ Не вдалося прочитати час з БД для {symbol}: {e_db}")
+                
+                # Якщо немає в БД (сирота) — запитуємо історію Bybit
+                if age_seconds is None:
+                    try:
+                        my_trades = safe_api_call(exchange.fetch_my_trades, symbol, limit=1)
+                        if my_trades:
+                            trade_ts = my_trades[0].get("timestamp")
+                            if trade_ts:
+                                age_seconds = (time.time() - (trade_ts / 1000.0))
+                    except Exception as e_trades:
+                        print(f"[{datetime.now()}] ⚠️ Не вдалося завантажити історію з Bybit для {symbol}: {e_trades}")
+                
+                if age_seconds is not None and age_seconds >= max_age_seconds:
+                    should_close = True
+                    close_reason = f"таймаут {age_seconds/3600:.1f} год >= {max_age_seconds/3600:.1f} год (PnL: {unrealized_pnl:.2f} USDT)"
+            
+            if should_close:
+                close_side = "sell" if side in {"buy", "long"} else "buy"
+                print(f"[{datetime.now()}] 🚨 Smart Monitor: закриваємо позицію {symbol} ({side}) по ринку — {close_reason}")
+                
+                order = safe_api_call(
+                    exchange.create_order,
+                    symbol=symbol,
+                    type="market",
+                    side=close_side,
+                    amount=contracts,
+                    price=None
+                )
+                
+                if order:
+                    status_outcome = "WIN" if unrealized_pnl >= 0 else "LOSS"
+                    update_trade_status(symbol=symbol, status=status_outcome, pnl=unrealized_pnl)
+                    record_trade(symbol, "LONG" if side in {"buy", "long"} else "SHORT", entry_price, entry_price * (1.0 + unrealized_pnl/position_notional if position_notional else 1.0), unrealized_pnl)
+                    
+                    send_telegram_message(
+                        f"🚨 <b>Smart Monitor: Позицію Закрито</b>\n"
+                        f"Монета: <b>{symbol}</b> ({side.upper()})\n"
+                        f"Причина: <code>{close_reason}</code>\n"
+                        f"PnL: <b>{unrealized_pnl:.2f} USDT</b>"
+                    )
+                    closed_symbols.append(symbol)
+        except Exception as e_pos:
+            print(f"[{datetime.now()}] ⚠️ Помилка обробки активної позиції {pos.get('symbol')}: {e_pos}")
+            
+    return closed_symbols
+
 
 import concurrent.futures
 
 def sync_open_trades(exchange, config: dict):
     """Синхронізує відкриті угоди в базі даних з їх реальним статусом на Bybit."""
     try:
+        # Отримуємо відкриті позиції на біржі
+        positions = get_open_positions(exchange)
+        
+        # V11.2: Активний менеджер позицій (стоп по сумі, тейк по %, таймаут, сироти)
+        closed_symbols = manage_active_positions(exchange, positions, config)
+        if closed_symbols:
+            positions = get_open_positions(exchange)
+            
         open_trades = get_open_trades()
         if not open_trades:
             return
-
-        # Отримуємо відкриті позиції на біржі
-        positions = get_open_positions(exchange)
         
         # Отримуємо вільний баланс один раз для розрахунку віртуальних PnL
         free_usdt = 50000.0
