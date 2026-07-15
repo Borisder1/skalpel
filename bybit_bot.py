@@ -453,8 +453,8 @@ def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pc
         if price_diff <= 0:
             return None
             
-        # FIXED: жорсткий cap ризику на угоду <=1%.
-        risk_pct = min(max(float(risk_pct), 0.1), 1.0)
+        # V11.3: Risk cap збільшено до 2.0% (було 1.0%) — конфіг керує через risk_pct
+        risk_pct = min(max(float(risk_pct), 0.1), 2.0)
         risk_amount = free_usdt * (risk_pct / 100.0)
         qty = risk_amount / price_diff
         leverage = min(max(float(leverage), 1.0), 10.0)
@@ -510,14 +510,21 @@ def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pc
         # FIXED: анти-дубль ордера по одному символу.
         if (now_ts - last_order_times.get(symbol, 0.0)) < MIN_ORDER_INTERVAL_SEC:
             return None
-        # V11.1: Market Order замість Limit — зменшує кількість CANCELLED
+        # V11.3: Aggressive Limit Order (0.1% offset від entry) замість Market.
+        # Це зменшує slippage та market impact на малоліквідних монетах.
+        offset_pct = 0.001  # 0.1%
+        if direction == "LONG":
+            limit_price = entry * (1.0 + offset_pct)  # Трохи вище — дозволяємо заповнення
+        else:
+            limit_price = entry * (1.0 - offset_pct)  # Трохи нижче — для SHORT
+        limit_price_str = exchange.price_to_precision(symbol, limit_price)
         order = safe_api_call(
             exchange.create_order,
             symbol=symbol,
-            type='market',
+            type='limit',
             side=side,
             amount=float(qty_str),
-            price=None,
+            price=float(limit_price_str),
             params=params
         )
         if not order:
@@ -529,9 +536,9 @@ def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pc
         last_order_times[symbol] = now_ts
         
         send_telegram_message(
-            f"🛒 <b>ОРДЕР ВИКОНАНО НА DEMO (Market)</b>\n"
+            f"🛒 <b>ОРДЕР ВИСТАВЛЕНО НА DEMO (Limit+offset)</b>\n"
             f"Монета: <b>{symbol}</b> | Напрямок: <b>{direction}</b>\n"
-            f"Ціна: <b>~{price_str}</b> (Market)\n"
+            f"Ліміт: <b>{limit_price_str}</b> (entry={price_str})\n"
             f"Об'єм: <b>{qty_str}</b>\n"
             f"Stop Loss: <b>{sl:.4f}</b> | Take Profit 2: <b>{tp2:.4f}</b>\n"
             f"ID ордера: <code>{order.get('id', 'N/A')}</code>"
@@ -1910,6 +1917,14 @@ def run_bot():
                             # ВІРТУАЛЬНИЙ вхід
                             reason_msg = "Портфель заповнений" if not is_probation else "Smart Retry (Probation)"
                             print(f"[{datetime.now()}] 🧠 {reason_msg}. Відкриваємо ВІРТУАЛЬНУ позицію для {symbol}")
+                            # V11.3: Дедуплікація — блокуємо повторний VIRTUAL для того ж символу в одній свічці
+                            already_virtual = any(
+                                t.get("symbol") == symbol and t.get("status") == "VIRTUAL_OPEN"
+                                for t in (get_open_trades() or [])
+                            )
+                            if already_virtual:
+                                print(f"[{datetime.now()}] 🔄 Virtual dedup: {symbol} вже має VIRTUAL_OPEN — пропускаємо")
+                                continue
                             log_trade(
                                 symbol=symbol,
                                 direction=direction,
