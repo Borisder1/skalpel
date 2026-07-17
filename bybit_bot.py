@@ -72,14 +72,15 @@ API_SECRET = os.getenv("BYBIT_API_SECRET")
 _data_dir = "/data" if os.path.isdir("/data") else os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(_data_dir, 'active_config.json')
 
+# V11.3 fix: Завжди оновлюємо /data/active_config.json з git-версії при старті
 _script_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'active_config.json')
-if CONFIG_PATH != _script_config and not os.path.exists(CONFIG_PATH) and os.path.exists(_script_config):
+if CONFIG_PATH != _script_config and os.path.exists(_script_config):
     try:
         import shutil
         shutil.copy(_script_config, CONFIG_PATH)
-        print(f"[{datetime.now()}] 🛠 Скопійовано active_config.json до persistent disk: {CONFIG_PATH}")
+        print(f"[startup] ✅ active_config.json оновлено з git → {CONFIG_PATH}")
     except Exception as e:
-        print(f"[{datetime.now()}] ⚠️ Не вдалося скопіювати active_config.json до /data: {e}")
+        print(f"[startup] ⚠️ Не вдалося оновити active_config.json до /data: {e}")
 
 TIMEFRAME = "15m"
 MIN_CANDLES_REQUIRED = 50
@@ -1917,14 +1918,17 @@ def run_bot():
                             # ВІРТУАЛЬНИЙ вхід
                             reason_msg = "Портфель заповнений" if not is_probation else "Smart Retry (Probation)"
                             print(f"[{datetime.now()}] 🧠 {reason_msg}. Відкриваємо ВІРТУАЛЬНУ позицію для {symbol}")
-                            # V11.3: Дедуплікація — блокуємо повторний VIRTUAL для того ж символу в одній свічці
-                            already_virtual = any(
-                                t.get("symbol") == symbol and t.get("status") == "VIRTUAL_OPEN"
-                                for t in (get_open_trades() or [])
-                            )
-                            if already_virtual:
-                                print(f"[{datetime.now()}] 🔄 Virtual dedup: {symbol} вже має VIRTUAL_OPEN — пропускаємо")
-                                continue
+                            # V11.3: Дедуплікація — блокуємо повторний VIRTUAL для того ж символу
+                            try:
+                                already_virtual = any(
+                                    t.get("symbol") == symbol and t.get("status") == "VIRTUAL_OPEN"
+                                    for t in (get_open_trades() or [])
+                                )
+                                if already_virtual:
+                                    print(f"[{datetime.now()}] 🔄 Virtual dedup: {symbol} вже має VIRTUAL_OPEN — пропускаємо")
+                                    continue
+                            except Exception as e_dedup:
+                                print(f"[{datetime.now()}] ⚠️ Virtual dedup error (ignored): {e_dedup}")
                             log_trade(
                                 symbol=symbol,
                                 direction=direction,
