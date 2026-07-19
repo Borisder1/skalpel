@@ -1213,8 +1213,12 @@ def run_bot():
     pending_keys = set()
     pending_lock = threading.Lock()
     exchange = init_bybit(startup_config)
-    start_bal_info = safe_api_call(exchange.fetch_balance) or {}
-    session_start_equity = extract_usdt_equity(start_bal_info)
+    try:
+        start_bal_info = safe_api_call(exchange.fetch_balance) or {}
+    except Exception as e_bal:
+        print(f"[{datetime.now()}] ⚠️ Не вдалося отримати стартовий баланс при запуску: {e_bal}")
+        start_bal_info = {}
+    session_start_equity = extract_usdt_equity(start_bal_info, fallback=10000.0)
     day_start_equity = session_start_equity
     print(f"[{datetime.now()}] 💰 Стартовий equity сесії: {session_start_equity:.4f} USDT")
     
@@ -1297,7 +1301,11 @@ def run_bot():
         CONFIG["vol_mult"] = min(float(CONFIG.get("vol_mult", 1.0)), float(active_filters["vol"]))
         CONFIG["fvg_min_size"] = active_filters["fvg"]
         # FIXED: max drawdown + daily loss guard перед скануванням/ордерами.
-        bal = safe_api_call(exchange.fetch_balance) or {}
+        try:
+            bal = safe_api_call(exchange.fetch_balance) or {}
+        except Exception as e_loop_bal:
+            print(f"[{datetime.now()}] ⚠️ Не вдалося оновити баланс у циклі: {e_loop_bal}")
+            bal = {}
         equity_now = extract_usdt_equity(bal, fallback=session_start_equity)
         today = datetime.now(timezone.utc).date()
         if day_marker != today:
