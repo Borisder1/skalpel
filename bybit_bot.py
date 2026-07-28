@@ -1373,11 +1373,11 @@ def run_bot():
                 else:
                     # CHOP / VOLATILE — посилюємо фільтри, але НЕ блокуємо повністю
                     print(f"[{datetime.now()}] ⚠️ Regime: {regime_name} — посилюємо фільтри (торгівля дозволена з обмеженнями)")
-                    # Посилюємо ADX поріг на +5, vol на ×1.3, підвищуємо auto_threshold
-                    CONFIG["adx_min"] = max(float(CONFIG.get("adx_min", 12)), 20.0)
-                    CONFIG["vol_multiplier_min"] = max(float(CONFIG.get("vol_multiplier_min", 0.7)), 1.0)
+                    # V11.5: Оптимізовані пороги для CHOP / VOLATILE (0.74 замість 0.80, щоб не блокувати якісні 0.75+ угоди)
+                    CONFIG["adx_min"] = max(float(CONFIG.get("adx_min", 12)), 18.0)
+                    CONFIG["vol_multiplier_min"] = max(float(CONFIG.get("vol_multiplier_min", 0.7)), 0.9)
                     CONFIG["auto_execute_confidence_threshold"] = max(
-                        float(CONFIG.get("auto_execute_confidence_threshold", 0.70)), 0.80
+                        float(CONFIG.get("auto_execute_confidence_threshold", 0.70)), 0.74
                     )
         except Exception as e_regime:
             print(f"[{datetime.now()}] ⚠️ Помилка Regime Filter: {e_regime}")
@@ -1819,15 +1819,40 @@ def run_bot():
                         rationale = quant_res["rationale"]
                         factors_snapshot = quant_res["factors"]
                         auto_thresh = float(CONFIG.get("auto_execute_confidence_threshold", 0.65))
-                        # V11.1: Контр-трендові угоди потребують вищий score
+                        # V11.5: Помірний поріг для контр-тренд угод (кап 0.78 замість 0.95)
                         if _counter_trend:
-                            auto_thresh = min(0.95, auto_thresh + 0.10)
+                            auto_thresh = min(0.78, auto_thresh + 0.05)
                             print(f"[{datetime.now()}] ⚠️ Контр-тренд поріг: {auto_thresh:.2f} для {symbol}")
                         
-                        # V11: ЖОРСТКИЙ ГЕЙТ — перевіряємо RAW score ПЕРЕД Vision AI та Telegram
+                        # V11.5: ГНУЧКИЙ ГЕЙТ — реальні угоди вимагають score >= auto_thresh.
+                        # Якщо score >= 0.70, але < auto_thresh — відкриваємо VIRTUAL угоду для збору даних та навчання.
                         if conf < auto_thresh:
-                            print(f"[{datetime.now()}] 🚫 Score {conf:.2f} < {auto_thresh:.2f} — {symbol} ЗАБЛОКОВАНО (hard gate)")
-                            record_event("setup_blocked_by_hard_gate", {"symbol": symbol, "score": conf, "threshold": auto_thresh})
+                            if conf >= 0.70:
+                                print(f"[{datetime.now()}] 🧠 Score {conf:.2f} < {auto_thresh:.2f} (Hard Gate). Відкриваємо ВІРТУАЛЬНУ позицію для {symbol}")
+                                try:
+                                    already_virtual = any(
+                                        t.get("symbol") == symbol and t.get("status") == "VIRTUAL_OPEN"
+                                        for t in (get_open_trades() or [])
+                                    )
+                                    if not already_virtual:
+                                        log_trade(
+                                            symbol=symbol,
+                                            direction=direction,
+                                            entry=setup.entry,
+                                            sl=setup.sl,
+                                            tp1=setup.tp1,
+                                            tp2=setup.tp2,
+                                            fib=CONFIG.get("fib_level", 0.5),
+                                            sl_mult=CONFIG.get("sl_atr_mult", 1.5),
+                                            order_id=f"VIRTUAL_{symbol}_{int(time.time())}",
+                                            quant_score=conf,
+                                            factors_snapshot=factors_snapshot,
+                                        )
+                                except Exception as e_v:
+                                    print(f"[{datetime.now()}] ⚠️ Помилка відкриття VIRTUAL при hard gate: {e_v}")
+                            else:
+                                print(f"[{datetime.now()}] 🚫 Score {conf:.2f} < {auto_thresh:.2f} — {symbol} ЗАБЛОКОВАНО (hard gate)")
+                                record_event("setup_blocked_by_hard_gate", {"symbol": symbol, "score": conf, "threshold": auto_thresh})
                             continue
                         
                         # --- V11: Vision AI Filter (ПІСЛЯ hard gate, ДО Telegram) ---
