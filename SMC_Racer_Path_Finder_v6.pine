@@ -1,0 +1,266 @@
+//@version=6
+indicator("SMC Racer Path Finder v6", overlay=true, max_lines_count=300, max_labels_count=300, max_boxes_count=300)
+
+// =============================================================================
+// Inputs & Configuration
+// =============================================================================
+grp1 = "MTF Trend Settings"
+emaFastLen = input.int(50, "Fast EMA Length", minval=5, group=grp1)
+emaSlowLen = input.int(200, "Slow EMA Length", minval=10, group=grp1)
+
+grp2 = "SMC & OTE Settings"
+liqLookback = input.int(20, "Liquidity Search Period", minval=5, group=grp2)
+fibLevel = input.float(0.618, "OTE Fibonacci level (0.5, 0.618, 0.705)", minval=0.1, maxval=0.9, step=0.05, group=grp2)
+fvgMinSize = input.float(0.5, "Min FVG Size (in ATR)", step=0.1, group=grp2)
+
+grp3 = "Visuals & Projections"
+tp2Rr = input.float(2.0, "Take-Profit 2 (Risk Reward)", step=0.1, group=grp3)
+showProjections = input.bool(true, "Show Expected Projection Path", group=grp3)
+projOffset = input.int(6, "Projection Step Width (bars)", minval=3, maxval=15, group=grp3)
+
+// =============================================================================
+// Technical Indicators
+// =============================================================================
+atr = ta.atr(14)
+volMa = ta.sma(volume, 20)
+relVol = volMa > 0 ? volume / volMa : 1.0
+
+// Timeframe 15m (Local)
+ema50_15m = ta.ema(close, emaFastLen)
+ema200_15m = ta.ema(close, emaSlowLen)
+isBull_15m = ema50_15m > ema200_15m
+isBear_15m = ema50_15m < ema200_15m
+
+// Timeframe 4h (Higher)
+[close_4h, ema50_4h, ema200_4h] = request.security(
+     syminfo.tickerid, "240",
+     [close, ta.ema(close, emaFastLen), ta.ema(close, emaSlowLen)],
+     lookahead=barmerge.lookahead_off
+ )
+isBull_4h = ema50_4h > ema200_4h
+isBear_4h = ema50_4h < ema200_4h
+
+// Timeframe 1D (Daily)
+[close_1d, ema50_1d, ema200_1d] = request.security(
+     syminfo.tickerid, "D",
+     [close, ta.ema(close, emaFastLen), ta.ema(close, emaSlowLen)],
+     lookahead=barmerge.lookahead_off
+ )
+isBull_1d = ema50_1d > ema200_1d
+isBear_1d = ema50_1d < ema200_1d
+
+// Timeframe 1W (Weekly)
+[close_1w, ema50_1w, ema200_1w] = request.security(
+     syminfo.tickerid, "W",
+     [close, ta.ema(close, emaFastLen), ta.ema(close, emaSlowLen)],
+     lookahead=barmerge.lookahead_off
+ )
+isBull_1w = ema50_1w > ema200_1w
+isBear_1w = ema50_1w < ema200_1w
+
+// Overall Higher Timeframe Bias
+int bias = 0
+if isBull_4h and isBull_1d
+    bias := 1
+else if isBear_4h and isBear_1d
+    bias := -1
+
+// Trend Strength (ADX)
+[plusDI, minusDI, adx] = ta.dmi(14, 14)
+isSideways = adx < 20
+
+// =============================================================================
+// Liquidity Sweep (Stop Hunt) Detection
+// =============================================================================
+highestHigh = ta.highest(high[1], liqLookback)
+lowestLow = ta.lowest(low[1], liqLookback)
+
+sweptHigh = high > highestHigh and close < highestHigh
+sweptLow = low < lowestLow and close > lowestLow
+
+var float lastSweepHigh = na
+var float lastSweepLow = na
+var int lastSweepHighBar = na
+var int lastSweepLowBar = na
+
+if sweptHigh
+    lastSweepHigh := high
+    lastSweepHighBar := bar_index
+if sweptLow
+    lastSweepLow := low
+    lastSweepLowBar := bar_index
+
+plotshape(sweptHigh, title="Sweep High (Liquidity Grab)", style=shape.xcross, location=location.abovebar, color=color.new(color.maroon, 20), size=size.small)
+plotshape(sweptLow, title="Sweep Low (Liquidity Grab)", style=shape.xcross, location=location.belowbar, color=color.new(color.teal, 20), size=size.small)
+
+// =============================================================================
+// Fair Value Gaps (FVG) Visualization
+// =============================================================================
+bullFvg = bar_index >= 2 and low > high[2]
+bearFvg = bar_index >= 2 and high < low[2]
+
+float bodySize = math.abs(close - open)
+isImpulseBull = close > open and bodySize > atr * 0.6 and relVol > 1.2
+isImpulseBear = close < open and bodySize > atr * 0.6 and relVol > 1.2
+
+// FVG Box Arrays
+var box[] bullFvgBoxes = array.new<box>()
+var box[] bearFvgBoxes = array.new<box>()
+
+if bullFvg and isImpulseBull
+    fBox = box.new(bar_index - 2, low, bar_index + 8, high[2], bgcolor=color.new(color.teal, 93), border_color=color.new(color.teal, 70), border_style=line.style_dashed)
+    array.push(bullFvgBoxes, fBox)
+    if array.size(bullFvgBoxes) > 5
+        box.delete(array.shift(bullFvgBoxes))
+
+if bearFvg and isImpulseBear
+    fBox = box.new(bar_index - 2, low[2], bar_index + 8, high, bgcolor=color.new(color.maroon, 93), border_color=color.new(color.maroon, 70), border_style=line.style_dashed)
+    array.push(bearFvgBoxes, fBox)
+    if array.size(bearFvgBoxes) > 5
+        box.delete(array.shift(bearFvgBoxes))
+
+// =============================================================================
+// OTE Setup Detection
+// =============================================================================
+type Setup
+    bool valid
+    int dir
+    float entry
+    float sl
+    float tp1
+    float tp2
+    int bornBar
+    float swingLow
+    float swingHigh
+
+var Setup currentSetup = Setup.new(false, 0, na, na, na, na, na, na, na)
+
+float localLowest = ta.lowest(low, 5)
+float localHighest = ta.highest(high, 5)
+
+if bullFvg and isImpulseBull and not isSideways and bias == 1
+    float swingLow = localLowest
+    if not na(lastSweepLow) and (bar_index - lastSweepLowBar) < 10
+        swingLow := lastSweepLow
+    float swingHigh = high
+    float fvgTop = low
+    float fvgBot = high[2]
+    if (fvgTop - fvgBot) >= atr * fvgMinSize
+        float fibEntry = swingLow + (swingHigh - swingLow) * (1.0 - fibLevel)
+        float entryPrice = math.min(fibEntry, fvgTop)
+        float slPrice = math.min(swingLow, entryPrice - atr * 1.5)
+        float risk = math.max(entryPrice - slPrice, syminfo.mintick)
+        float tp1Price = entryPrice + risk * 1.0
+        float tp2Price = entryPrice + risk * tp2Rr
+        currentSetup := Setup.new(true, 1, entryPrice, slPrice, tp1Price, tp2Price, bar_index, swingLow, swingHigh)
+
+if bearFvg and isImpulseBear and not isSideways and bias == -1
+    float swingHigh = localHighest
+    if not na(lastSweepHigh) and (bar_index - lastSweepHighBar) < 10
+        swingHigh := lastSweepHigh
+    float swingLow = low
+    float fvgTop = low[2]
+    float fvgBot = high
+    if (fvgTop - fvgBot) >= atr * fvgMinSize
+        float fibEntry = swingHigh - (swingHigh - swingLow) * (1.0 - fibLevel)
+        float entryPrice = math.max(fibEntry, fvgBot)
+        float slPrice = math.max(swingHigh, entryPrice + atr * 1.5)
+        float risk = math.max(slPrice - entryPrice, syminfo.mintick)
+        float tp1Price = entryPrice - risk * 1.0
+        float tp2Price = entryPrice - risk * tp2Rr
+        currentSetup := Setup.new(true, -1, entryPrice, slPrice, tp1Price, tp2Price, bar_index, swingLow, swingHigh)
+
+// Setup Expiry (after 15 bars)
+if currentSetup.valid and (bar_index - currentSetup.bornBar) > 15
+    currentSetup.valid := false
+
+// =============================================================================
+// Expected Future Path Projections (Lines & Labels)
+// =============================================================================
+var line projLine1 = na
+var line projLine2 = na
+var line projLine3 = na
+var label projLabel0 = na
+var label projLabel1 = na
+var label projLabel2 = na
+var label projLabel3 = na
+
+if showProjections and barstate.islast
+    // Clean old objects
+    if not na(projLine1)
+        line.delete(projLine1)
+        line.delete(projLine2)
+        line.delete(projLine3)
+        label.delete(projLabel0)
+        label.delete(projLabel1)
+        label.delete(projLabel2)
+        label.delete(projLabel3)
+    
+    // Choose direction: active setup or trend bias
+    int dir = currentSetup.valid ? currentSetup.dir : bias
+    
+    if dir != 0
+        colorProj = dir == 1 ? color.teal : color.maroon
+        
+        // Define projection path coordinates
+        int x0 = bar_index
+        float y0 = close
+        
+        int x1 = bar_index + projOffset
+        float y1 = na
+        
+        int x2 = bar_index + projOffset * 2
+        float y2 = na
+        
+        int x3 = bar_index + projOffset * 3
+        float y3 = na
+        
+        string titleText = ""
+        
+        if currentSetup.valid
+            titleText := dir == 1 ? "💡 ACTIVE BULLISH SETUP" : "💡 ACTIVE BEARISH SETUP"
+            y1 := dir == 1 ? currentSetup.swingLow : currentSetup.swingHigh
+            y2 := currentSetup.entry
+            y3 := currentSetup.tp2
+        else
+            titleText := dir == 1 ? "🔮 EXPECTED BULLISH BIAS PATH" : "🔮 EXPECTED BEARISH BIAS PATH"
+            y1 := dir == 1 ? lowestLow : highestHigh
+            y2 := dir == 1 ? (lowestLow + (close - lowestLow) * 0.5) : (highestHigh - (highestHigh - close) * 0.5)
+            y3 := dir == 1 ? (close + atr * 2.5) : (close - atr * 2.5)
+            
+        // Draw projection path lines
+        projLine1 := line.new(x0, y0, x1, y1, color=colorProj, style=line.style_dotted, width=2)
+        projLine2 := line.new(x1, y1, x2, y2, color=colorProj, style=line.style_dashed, width=2)
+        projLine3 := line.new(x2, y2, x3, y3, color=colorProj, style=line.style_solid, width=3)
+        
+        // Labels representing the step-by-step projection
+        projLabel0 := label.new(x0, y0 + (dir == 1 ? atr * 0.3 : -atr * 0.3), titleText, color=color.new(colorProj, 20), textcolor=color.white, style=label.style_label_center, size=size.small)
+        projLabel1 := label.new(x1, y1, "1. Stop Hunt / Sweep 🪓", color=color.new(color.black, 40), textcolor=color.white, style=dir == 1 ? label.style_label_up : label.style_label_down, size=size.small)
+        projLabel2 := label.new(x2, y2, "2. Entry Zone (OTE) 🛒", color=color.new(color.black, 40), textcolor=color.white, style=dir == 1 ? label.style_label_down : label.style_label_up, size=size.small)
+        projLabel3 := label.new(x3, y3, dir == 1 ? "3. Target Expansion 🚀" : "3. Target Expansion 🩸", color=colorProj, textcolor=color.white, style=label.style_label_left, size=size.small)
+
+// =============================================================================
+// Information Dashboard Table
+// =============================================================================
+var table dash = table.new(position.bottom_right, 3, 5, bgcolor=color.new(color.black, 40), border_color=color.new(color.gray, 60), border_width=1)
+
+if barstate.islast
+    table.cell(dash, 0, 0, "Timeframe", text_color=color.silver, text_size=size.small, bgcolor=color.new(color.black, 60))
+    table.cell(dash, 1, 0, "Trend Bias", text_color=color.silver, text_size=size.small, bgcolor=color.new(color.black, 60))
+    table.cell(dash, 2, 0, "Status", text_color=color.silver, text_size=size.small, bgcolor=color.new(color.black, 60))
+    
+    table.cell(dash, 0, 1, "15m (Local)", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 1, isBull_15m ? "🟢 BULLISH" : isBear_15m ? "🔴 BEARISH" : "⚪ NEUTRAL", text_color=isBull_15m ? color.teal : isBear_15m ? color.maroon : color.gray, text_size=size.small)
+    table.cell(dash, 2, 1, isSideways ? "CHOP 🔀" : "TREND 📈", text_color=isSideways ? color.yellow : color.teal, text_size=size.small)
+    
+    table.cell(dash, 0, 2, "4h (Higher)", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 2, isBull_4h ? "🟢 BULLISH" : isBear_4h ? "🔴 BEARISH" : "⚪ NEUTRAL", text_color=isBull_4h ? color.teal : isBear_4h ? color.maroon : color.gray, text_size=size.small)
+    table.cell(dash, 2, 2, "EMA 50/200", text_color=color.silver, text_size=size.small)
+    
+    table.cell(dash, 0, 3, "1D (Daily)", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 3, isBull_1d ? "🟢 BULLISH" : isBear_1d ? "🔴 BEARISH" : "⚪ NEUTRAL", text_color=isBull_1d ? color.teal : isBear_1d ? color.maroon : color.gray, text_size=size.small)
+    table.cell(dash, 2, 3, "EMA 50/200", text_color=color.silver, text_size=size.small)
+    
+    table.cell(dash, 0, 4, "1W (Weekly)", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 4, isBull_1w ? "🟢 BULLISH" : isBear_1w ? "🔴 BEARISH" : "⚪ NEUTRAL", text_color=isBull_1w ? color.teal : isBear_1w ? color.maroon : color.gray, text_size=size.small)
+    table.cell(dash, 2, 4, "EMA 50/200", text_color=color.silver, text_size=size.small)
