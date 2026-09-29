@@ -340,6 +340,19 @@ def init_bybit(config: dict):
     api_key = config.get("api_key") or API_KEY
     api_secret = config.get("api_secret") or API_SECRET
 
+    # V11.7: Перевірка зовнішнього файлу ключів на Persistent Disk (/data/bybit_keys.json)
+    keys_file = os.path.join(_data_dir, "bybit_keys.json")
+    if os.path.exists(keys_file):
+        try:
+            with open(keys_file, 'r', encoding='utf-8') as kf:
+                kdata = json.load(kf)
+                if kdata.get("api_key") and kdata.get("api_secret"):
+                    api_key = kdata["api_key"].strip()
+                    api_secret = kdata["api_secret"].strip()
+                    print(f"[{datetime.now()}] 🔑 Завантажено актуальні Bybit API ключі з {keys_file}")
+        except Exception as e_kf:
+            print(f"[{datetime.now()}] ⚠️ Не вдалося прочитати {keys_file}: {e_kf}")
+
     if use_demo:
         print(f"[{datetime.now()}] ⚠️ DEMO MODE — реальні гроші не використовуються ({base_url})")
     else:
@@ -352,7 +365,7 @@ def init_bybit(config: dict):
         'options': {
             'defaultType': 'future',
             'adjustForTimeDifference': True,
-            'recvWindow': 10000
+            'recvWindow': 20000
         }
     }
     
@@ -1360,16 +1373,19 @@ def run_bot():
             if not regime_result["allow_trading"]:
                 regime_name = regime_result['regime']
                 if regime_name == "MANIPULATION":
-                    # MANIPULATION — повна зупинка нових входів
-                    print(f"[{datetime.now()}] 🛑 Regime: MANIPULATION — нові входи повністю заблоковано")
-                    send_telegram_message(
-                        f"🛑 <b>Regime: MANIPULATION</b>\n"
-                        f"{regime_result['details']}\n"
-                        f"Нові входи заблоковано. Чекаємо 2 хвилини."
+                    # V11.6: MANIPULATION — посилюємо фільтри МАКСИМАЛЬНО, але НЕ блокуємо сканування
+                    # (Раніше тут був `continue`, який повністю зупиняв бота на тижні у боковику BTC)
+                    print(f"[{datetime.now()}] 🛑 Regime: MANIPULATION — максимально посилені фільтри (поріг 0.80)")
+                    CONFIG["adx_min"] = max(float(CONFIG.get("adx_min", 12)), 22.0)
+                    CONFIG["vol_multiplier_min"] = max(float(CONFIG.get("vol_multiplier_min", 0.7)), 1.2)
+                    CONFIG["auto_execute_confidence_threshold"] = max(
+                        float(CONFIG.get("auto_execute_confidence_threshold", 0.70)), 0.80
                     )
-                    sync_open_trades(exchange, CONFIG)
-                    time.sleep(120)
-                    continue
+                    # Синхронізуємо відкриті позиції навіть при MANIPULATION
+                    try:
+                        sync_open_trades(exchange, CONFIG)
+                    except Exception:
+                        pass
                 else:
                     # CHOP / VOLATILE — посилюємо фільтри, але НЕ блокуємо повністю
                     print(f"[{datetime.now()}] ⚠️ Regime: {regime_name} — посилюємо фільтри (торгівля дозволена з обмеженнями)")

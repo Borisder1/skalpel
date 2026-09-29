@@ -8,3 +8,4 @@ trades_history.db
 logs/*.log
 *.db
 .venv/
+bybit_keys.json

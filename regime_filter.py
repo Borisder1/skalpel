@@ -211,11 +211,18 @@ def check_market_regime(exchange, force_refresh: bool = False) -> dict:
             allow_trading = False
             reasons.append(f"ADX={adx:.1f}<15 + wicks={wick_ratio:.0%}>70%")
 
-        # CHOP: ADX < 20 АБО price range < 1% за 4h
-        elif adx < 20 or price_range_pct < 1.0:
+        # CHOP: ADX < 20 І price range < 1% за 4h (потрібні ОБИДВІ умови)
+        # V11.6: Змінено OR на AND — ADX=32 з range 0.89% це НЕ CHOP, це вузький тренд
+        elif adx < 20 and price_range_pct < 1.0:
             regime = "CHOP"
             allow_trading = False
-            reasons.append(f"ADX={adx:.1f}<20" if adx < 20 else f"Range={price_range_pct:.2f}%<1%")
+            reasons.append(f"ADX={adx:.1f}<20 + Range={price_range_pct:.2f}%<1%")
+
+        # LOW ADX (без range): тільки низький ADX, range може бути нормальним
+        elif adx < 20:
+            regime = "CHOP"
+            allow_trading = False
+            reasons.append(f"ADX={adx:.1f}<20")
 
         # VOLATILE: ATR > 2× середнього
         elif atr_ratio > 2.0:
@@ -228,6 +235,12 @@ def check_market_regime(exchange, force_refresh: bool = False) -> dict:
             regime = "TREND"
             allow_trading = True
             reasons.append(f"ADX={adx:.1f}>25, EMA slope={ema_slope:.3f}%")
+
+        # RANGE BOUND: ADX >= 20 але range < 1% — вузький тренд, дозволяємо торгувати
+        elif price_range_pct < 1.0:
+            regime = "TREND"
+            allow_trading = True
+            reasons.append(f"ADX={adx:.1f}>=20, Range={price_range_pct:.2f}%<1% — narrow trend")
 
         # Нейтральний (між CHOP і TREND) — дозволяємо з обережністю
         else:

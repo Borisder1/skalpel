@@ -6,6 +6,11 @@ import json
 import subprocess
 from datetime import datetime
 
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
+
 print("=" * 60)
 print("🔍 SYSTEM DIAGNOSTIC TOOL FOR SMC RACER")
 print("=" * 60)
@@ -127,10 +132,27 @@ try:
     api_key = os.getenv("BYBIT_API_KEY")
     api_secret = os.getenv("BYBIT_API_SECRET")
     
+    # Check bybit_keys.json
+    keys_file = os.path.join(_data_dir, "bybit_keys.json")
+    if os.path.exists(keys_file):
+        try:
+            with open(keys_file, 'r', encoding='utf-8') as kf:
+                kdata = json.load(kf)
+                if kdata.get("api_key") and kdata.get("api_secret"):
+                    api_key = kdata["api_key"].strip()
+                    api_secret = kdata["api_secret"].strip()
+                    print(f"Loaded API keys from {keys_file}")
+        except Exception as e_kf:
+            print(f"Failed to read {keys_file}: {e_kf}")
+
     exchange_params = {
         'enableRateLimit': True,
         'timeout': 15000,
-        'options': {'defaultType': 'future'}
+        'options': {
+            'defaultType': 'future',
+            'adjustForTimeDifference': True,
+            'recvWindow': 20000
+        }
     }
     if use_demo:
         exchange_params['urls'] = {'api': "https://api-demo.bybit.com"}
@@ -140,7 +162,7 @@ try:
     if api_key and api_secret:
         exchange_params['apiKey'] = api_key
         exchange_params['secret'] = api_secret
-        print("Attempting authenticated API call...")
+        print(f"Attempting authenticated API call (Key ending in ...{api_key[-4:]})...")
     else:
         print("API keys missing from environment. Skipping authenticated API call...")
         
@@ -151,6 +173,11 @@ try:
         except:
             pass
             
+    try:
+        ex.load_time_difference()
+    except Exception as e_time:
+        print(f"Time diff warning: {e_time}")
+
     print("Fetching tickers for BTC/USDT...")
     ticker = ex.fetch_ticker("BTC/USDT")
     print(f"  BTC/USDT Last Price: {ticker.get('last')}")
