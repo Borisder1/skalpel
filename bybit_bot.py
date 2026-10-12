@@ -524,21 +524,13 @@ def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pc
         # FIXED: анти-дубль ордера по одному символу.
         if (now_ts - last_order_times.get(symbol, 0.0)) < MIN_ORDER_INTERVAL_SEC:
             return None
-        # V11.3: Aggressive Limit Order (0.1% offset від entry) замість Market.
-        # Це зменшує slippage та market impact на малоліквідних монетах.
-        offset_pct = 0.001  # 0.1%
-        if direction == "LONG":
-            limit_price = entry * (1.0 + offset_pct)  # Трохи вище — дозволяємо заповнення
-        else:
-            limit_price = entry * (1.0 - offset_pct)  # Трохи нижче — для SHORT
-        limit_price_str = exchange.price_to_precision(symbol, limit_price)
+        # Path A Reboot: Market Order для гарантованого виконання на DEMO
         order = safe_api_call(
             exchange.create_order,
             symbol=symbol,
-            type='limit',
+            type='market',
             side=side,
             amount=float(qty_str),
-            price=float(limit_price_str),
             params=params
         )
         if not order:
@@ -550,9 +542,9 @@ def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pc
         last_order_times[symbol] = now_ts
         
         send_telegram_message(
-            f"🛒 <b>ОРДЕР ВИСТАВЛЕНО НА DEMO (Limit+offset)</b>\n"
+            f"🛒 <b>ОРДЕР ВИСТАВЛЕНО НА DEMO (Market)</b>\n"
             f"Монета: <b>{symbol}</b> | Напрямок: <b>{direction}</b>\n"
-            f"Ліміт: <b>{limit_price_str}</b> (entry={price_str})\n"
+            f"Ціна сетапу: <b>{price_str}</b>\n"
             f"Об'єм: <b>{qty_str}</b>\n"
             f"Stop Loss: <b>{sl:.4f}</b> | Take Profit 2: <b>{tp2:.4f}</b>\n"
             f"ID ордера: <code>{order.get('id', 'N/A')}</code>"
@@ -1342,12 +1334,8 @@ def run_bot():
         # V9.1: Per-symbol progressive blacklist replaces global halt
         # (Global halt removed — blocking is per-symbol, not per-portfolio)
         
-        # V9.0: Non-blocking reflection pause
-        if time.time() < reflection_pause_until:
-            remaining = int(reflection_pause_until - time.time())
-            print(f"[{datetime.now()}] ⏸️ Reflection pause: ще {remaining}с до відновлення")
-            time.sleep(60)
-            continue
+        # V9.0: Non-blocking reflection pause (Вимкнено в Path A, щоб не блокувати торгівлю)
+        # if time.time() < reflection_pause_until: ...
         
         # V11.1: WR-based CHOP throttle — пауза при поганому WR
         if time.time() < _chop_throttle_until:
@@ -1367,38 +1355,20 @@ def run_bot():
             time.sleep(60)
             continue
         
-        # V9.0: Regime Filter — перевіряємо BTC перед скануванням пар
+        # V9.0: Regime Filter — інформування без штучного завищення порогів (Path A)
         try:
             regime_result = check_market_regime(exchange)
-            if not regime_result["allow_trading"]:
-                regime_name = regime_result['regime']
-                if regime_name == "MANIPULATION":
-                    # V11.6: MANIPULATION — посилюємо фільтри МАКСИМАЛЬНО, але НЕ блокуємо сканування
-                    # (Раніше тут був `continue`, який повністю зупиняв бота на тижні у боковику BTC)
-                    print(f"[{datetime.now()}] 🛑 Regime: MANIPULATION — максимально посилені фільтри (поріг 0.80)")
-                    CONFIG["adx_min"] = max(float(CONFIG.get("adx_min", 12)), 22.0)
-                    CONFIG["vol_multiplier_min"] = max(float(CONFIG.get("vol_multiplier_min", 0.7)), 1.2)
-                    CONFIG["auto_execute_confidence_threshold"] = max(
-                        float(CONFIG.get("auto_execute_confidence_threshold", 0.70)), 0.80
-                    )
-                    # Синхронізуємо відкриті позиції навіть при MANIPULATION
-                    try:
-                        sync_open_trades(exchange, CONFIG)
-                    except Exception:
-                        pass
-                else:
-                    # CHOP / VOLATILE — посилюємо фільтри, але НЕ блокуємо повністю
-                    print(f"[{datetime.now()}] ⚠️ Regime: {regime_name} — посилюємо фільтри (торгівля дозволена з обмеженнями)")
-                    # V11.5: Оптимізовані пороги для CHOP / VOLATILE (0.74 замість 0.80, щоб не блокувати якісні 0.75+ угоди)
-                    CONFIG["adx_min"] = max(float(CONFIG.get("adx_min", 12)), 18.0)
-                    CONFIG["vol_multiplier_min"] = max(float(CONFIG.get("vol_multiplier_min", 0.7)), 0.9)
-                    CONFIG["auto_execute_confidence_threshold"] = max(
-                        float(CONFIG.get("auto_execute_confidence_threshold", 0.70)), 0.74
-                    )
+            regime_name = regime_result.get('regime', 'UNKNOWN')
+            if not regime_result.get("allow_trading", True):
+                print(f"[{datetime.now()}] ℹ️ BTC Regime: {regime_name} (моніторинг без блокування)")
+                try:
+                    sync_open_trades(exchange, CONFIG)
+                except Exception:
+                    pass
         except Exception as e_regime:
             print(f"[{datetime.now()}] ⚠️ Помилка Regime Filter: {e_regime}")
         
-        # V10: Direction Bias — зберігаємо для фільтрації контр-трендових сетапів
+        # V10: Direction Bias — зберігаємо для аналізу
         try:
             _direction_bias = regime_result.get("direction_bias", "NEUTRAL")
         except Exception:
@@ -1410,7 +1380,7 @@ def run_bot():
         except Exception:
             pass
             
-        # V8.0: Autonomous Reflection Agent
+        # V8.0: Autonomous Reflection Agent — аналіз без примусової зупинки торгівлі (Path A)
         try:
             import pnl_tracker
             import reflection_agent
@@ -1419,7 +1389,7 @@ def run_bot():
                 total_trades = len(pnl_tracker.load_stats().get("trades", []))
                 last_reflected_count = getattr(reflection_agent, "_last_reflected_count", 0)
                 
-                # Check if we have new closed trades since the last reflection to prevent endless pause loops
+                # Check if we have new closed trades since the last reflection
                 if total_trades > last_reflected_count:
                     ctx = pnl_tracker.get_recent_trades_context(limit=consec_losses)
                     reflection_agent._last_reflected_count = total_trades
@@ -1429,12 +1399,7 @@ def run_bot():
                     msg = f"🧠 *AI Рефлексія (Збитки: {consec_losses})*\nРинок: {regime}\nПорада: {rec}"
                     print(msg)
                     send_telegram_message(msg)
-                    
-                    if regime in ["CHOP", "VOLATILE", "MANIPULATION"]:
-                        reflection_pause_until = time.time() + 1800  # 30 хвилин non-blocking
-                        print(f"[{datetime.now()}] 🛑 AI зупиняє торгівлю через {regime} на 30 хв (non-blocking).")
-                        send_telegram_message(f"⏸️ Reflection pause: {regime}. Пауза 30 хв.")
-                        # НЕ continue — дозволяємо sync_open_trades виконатися
+                    # Path A: не блокуємо ринок штучною паузою на 30 хв
         except Exception as e_refl:
             print(f"[{datetime.now()}] ⚠️ Помилка виклику Reflection Agent: {e_refl}")
 
@@ -1835,16 +1800,15 @@ def run_bot():
                         rationale = quant_res["rationale"]
                         factors_snapshot = quant_res["factors"]
                         auto_thresh = float(CONFIG.get("auto_execute_confidence_threshold", 0.65))
-                        # V11.5: Помірний поріг для контр-тренд угод (кап 0.78 замість 0.95)
+                        # Path A: Counter-trend boost вимкнено — оцінюємо чистий квантовий бал
                         if _counter_trend:
-                            auto_thresh = min(0.78, auto_thresh + 0.05)
-                            print(f"[{datetime.now()}] ⚠️ Контр-тренд поріг: {auto_thresh:.2f} для {symbol}")
+                            print(f"[{datetime.now()}] ℹ️ Контр-тренд сетап для {symbol} (поріг не завищується: {auto_thresh:.2f})")
                         
-                        # V11.5: ГНУЧКИЙ ГЕЙТ — реальні угоди вимагають score >= auto_thresh.
-                        # Якщо score >= 0.70, але < auto_thresh — відкриваємо VIRTUAL угоду для збору даних та навчання.
+                        # Path A: Реальний вхід при conf >= auto_thresh.
+                        # Нижчі бали (conf < auto_thresh) йдуть у VIRTUAL для навчання.
                         if conf < auto_thresh:
-                            if conf >= 0.70:
-                                print(f"[{datetime.now()}] 🧠 Score {conf:.2f} < {auto_thresh:.2f} (Hard Gate). Відкриваємо ВІРТУАЛЬНУ позицію для {symbol}")
+                            if conf >= 0.55:
+                                print(f"[{datetime.now()}] 🧠 Score {conf:.2f} < {auto_thresh:.2f}. Відкриваємо ВІРТУАЛЬНУ позицію для {symbol}")
                                 try:
                                     already_virtual = any(
                                         t.get("symbol") == symbol and t.get("status") == "VIRTUAL_OPEN"
@@ -1871,7 +1835,7 @@ def run_bot():
                                 record_event("setup_blocked_by_hard_gate", {"symbol": symbol, "score": conf, "threshold": auto_thresh})
                             continue
                         
-                        # --- V11: Vision AI Filter (ПІСЛЯ hard gate, ДО Telegram) ---
+                        # --- Path A: Vision AI Filter (ТІЛЬКИ ДОРАДЧИЙ, НЕ БЛОКУЄ УГОДИ) ---
                         try:
                             import vision_agent
                             now_ts = time.time()
@@ -1892,11 +1856,12 @@ def run_bot():
                                 _vision_cache[symbol] = {"decision": vision_decision, "timestamp": now_ts}
 
                             if (direction == "LONG" and vision_decision == "BEARISH") or (direction == "SHORT" and vision_decision == "BULLISH"):
-                                print(f"[{datetime.now()}] 🚫 Vision AI заблокував {direction} для {symbol}. Зображення вказує на {vision_decision}.")
-                                record_event("setup_blocked_by_vision_ai", {"symbol": symbol, "vision": vision_decision})
-                                continue
+                                # Path A: Логуємо розбіжність, але НЕ блокуємо сетап
+                                print(f"[{datetime.now()}] 👁️ Vision AI розбіжність для {symbol}: {vision_decision} (угода НЕ блокується)")
+                                rationale += f" | 👁️ Vision AI розбіжність ({vision_decision})"
+                                factors_snapshot["vision_score"] = -0.05
                             elif (direction == "LONG" and vision_decision == "BULLISH") or (direction == "SHORT" and vision_decision == "BEARISH"):
-                                conf = min(0.95, conf * 1.05) # V11: Мультиплікатор замість +0.15
+                                conf = min(0.95, conf * 1.05)
                                 rationale += f" | 👁️ Vision AI підтверджує {vision_decision}."
                                 factors_snapshot["vision_score"] = round(conf - quant_res["score"], 3)
                             else:
