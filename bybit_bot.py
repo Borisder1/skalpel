@@ -337,21 +337,47 @@ def init_bybit(config: dict):
     """Ініціалізація Bybit для демо-торгівлі за допомогою API-ключів."""
     use_demo = bool(config.get("use_demo", True))
     base_url = config.get("base_url") or ("https://api-demo.bybit.com" if use_demo else "https://api.bybit.com")
-    api_key = config.get("api_key") or API_KEY
-    api_secret = config.get("api_secret") or API_SECRET
-
-    # V11.7: Перевірка зовнішнього файлу ключів на Persistent Disk (/data/bybit_keys.json)
-    keys_file = os.path.join(_data_dir, "bybit_keys.json")
-    if os.path.exists(keys_file):
+    # Path A v2: Пріоритет ключів — ENV VARS > bybit_keys.json > config
+    # Render Dashboard env vars завжди мають найвищий пріоритет
+    api_key = API_KEY  # з os.getenv("BYBIT_API_KEY")
+    api_secret = API_SECRET  # з os.getenv("BYBIT_API_SECRET")
+    key_source = "Environment Variables"
+    
+    # Fallback: якщо env vars пусті — пробуємо bybit_keys.json
+    if not api_key or not api_secret:
+        keys_file = os.path.join(_data_dir, "bybit_keys.json")
+        if os.path.exists(keys_file):
+            try:
+                with open(keys_file, 'r', encoding='utf-8') as kf:
+                    kdata = json.load(kf)
+                    if kdata.get("api_key") and kdata.get("api_secret"):
+                        api_key = kdata["api_key"].strip()
+                        api_secret = kdata["api_secret"].strip()
+                        key_source = keys_file
+            except Exception as e_kf:
+                print(f"[{datetime.now()}] ⚠️ Не вдалося прочитати {keys_file}: {e_kf}")
+    
+    # Fallback: якщо і json пустий — пробуємо config
+    if not api_key or not api_secret:
+        api_key = config.get("api_key") or ""
+        api_secret = config.get("api_secret") or ""
+        if api_key:
+            key_source = "active_config.json"
+    
+    if api_key:
+        print(f"[{datetime.now()}] 🔑 API ключі завантажено з: {key_source} (Key: ...{api_key[-4:]})")
+    else:
+        print(f"[{datetime.now()}] ⚠️ API ключі не знайдено в жодному джерелі!")
+    
+    # Синхронізуємо bybit_keys.json з env vars
+    if API_KEY and API_SECRET:
+        _kf_path = os.path.join(_data_dir, "bybit_keys.json")
         try:
-            with open(keys_file, 'r', encoding='utf-8') as kf:
-                kdata = json.load(kf)
-                if kdata.get("api_key") and kdata.get("api_secret"):
-                    api_key = kdata["api_key"].strip()
-                    api_secret = kdata["api_secret"].strip()
-                    print(f"[{datetime.now()}] 🔑 Завантажено актуальні Bybit API ключі з {keys_file}")
-        except Exception as e_kf:
-            print(f"[{datetime.now()}] ⚠️ Не вдалося прочитати {keys_file}: {e_kf}")
+            with open(_kf_path, 'w', encoding='utf-8') as kf:
+                json.dump({"api_key": API_KEY, "api_secret": API_SECRET}, kf, indent=2)
+            print(f"[{datetime.now()}] 💾 bybit_keys.json синхронізовано з env vars")
+        except Exception:
+            pass
 
     if use_demo:
         print(f"[{datetime.now()}] ⚠️ DEMO MODE — реальні гроші не використовуються ({base_url})")

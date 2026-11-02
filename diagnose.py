@@ -12,7 +12,7 @@ except Exception:
     pass
 
 print("=" * 60)
-print("🔍 SYSTEM DIAGNOSTIC TOOL FOR SMC RACER")
+print("\U0001f50d SYSTEM DIAGNOSTIC TOOL FOR SMC RACER")
 print("=" * 60)
 
 # 1. Check Python and environment
@@ -21,9 +21,9 @@ print(f"Python Version: {sys.version}")
 print(f"Current Directory: {os.getcwd()}")
 print(f"Environment variables:")
 print(f"  - PORT: {os.getenv('PORT', 'Not set')}")
-print(f"  - BYBIT_API_KEY: {'Present' if os.getenv('BYBIT_API_KEY') else 'MISSING ❌'}")
-print(f"  - BYBIT_API_SECRET: {'Present' if os.getenv('BYBIT_API_SECRET') else 'MISSING ❌'}")
-print(f"  - TELEGRAM_BOT_TOKEN: {'Present' if os.getenv('TELEGRAM_BOT_TOKEN') else 'MISSING ❌'}")
+print(f"  - BYBIT_API_KEY: {'Present' if os.getenv('BYBIT_API_KEY') else 'MISSING \u274c'}")
+print(f"  - BYBIT_API_SECRET: {'Present' if os.getenv('BYBIT_API_SECRET') else 'MISSING \u274c'}")
+print(f"  - TELEGRAM_BOT_TOKEN: {'Present' if os.getenv('TELEGRAM_BOT_TOKEN') else 'MISSING \u274c'}")
 
 # 2. Check running processes
 print(f"\n[2. RUNNING PROCESSES]")
@@ -35,7 +35,7 @@ try:
         for p in python_procs:
             print(f"  {p}")
     else:
-        print("❌ No running python/bybit_bot processes found in ps aux!")
+        print("\u274c No running python/bybit_bot processes found in ps aux!")
 except Exception as e:
     print(f"Could not run ps aux: {e}")
 
@@ -52,12 +52,13 @@ if os.path.exists(config_path):
         print("Config parameters:")
         print(f"  - use_demo: {cfg.get('use_demo')}")
         print(f"  - risk_pct: {cfg.get('risk_pct')}")
+        print(f"  - auto_execute_confidence_threshold: {cfg.get('auto_execute_confidence_threshold')}")
         print(f"  - max_concurrent_positions: {cfg.get('max_concurrent_positions')}")
         print(f"  - max_position_loss_usd: {cfg.get('max_position_loss_usd')}")
     except Exception as e:
-        print(f"❌ Failed to parse config JSON: {e}")
+        print(f"\u274c Failed to parse config JSON: {e}")
 else:
-    print("❌ Config file does not exist!")
+    print("\u274c Config file does not exist!")
 
 # 4. Check Database
 print(f"\n[4. DATABASE]")
@@ -83,9 +84,9 @@ if os.path.exists(db_path):
             print(f"  ID: {t[0]} | {t[1]} | {t[2]} | {t[3]} | {t[4]} | PnL: {t[5]}")
         conn.close()
     except Exception as e:
-        print(f"❌ DB Query failed: {e}")
+        print(f"\u274c DB Query failed: {e}")
 else:
-    print("❌ Database file does not exist!")
+    print("\u274c Database file does not exist!")
 
 # 5. Check Logs
 print(f"\n[5. LOG FILES]")
@@ -112,7 +113,7 @@ if log_files:
     except Exception as e:
         print(f"Could not read log file: {e}")
 else:
-    print("❌ No log files (.log) found in project directory or /data!")
+    print("\u274c No log files (.log) found in project directory or /data!")
 
 # 6. Test Bybit CCXT Connection
 print(f"\n[6. BYBIT CCXT API TEST]")
@@ -128,22 +129,26 @@ try:
                 use_demo = json.load(f).get("use_demo", True)
         except:
             pass
-            
+    
+    # Пріоритет: ENV VARS > bybit_keys.json (як в init_bybit)
     api_key = os.getenv("BYBIT_API_KEY")
     api_secret = os.getenv("BYBIT_API_SECRET")
+    key_source = "Environment Variables"
     
-    # Check bybit_keys.json
-    keys_file = os.path.join(_data_dir, "bybit_keys.json")
-    if os.path.exists(keys_file):
-        try:
-            with open(keys_file, 'r', encoding='utf-8') as kf:
-                kdata = json.load(kf)
-                if kdata.get("api_key") and kdata.get("api_secret"):
-                    api_key = kdata["api_key"].strip()
-                    api_secret = kdata["api_secret"].strip()
-                    print(f"Loaded API keys from {keys_file}")
-        except Exception as e_kf:
-            print(f"Failed to read {keys_file}: {e_kf}")
+    if not api_key or not api_secret:
+        keys_file = os.path.join(_data_dir, "bybit_keys.json")
+        if os.path.exists(keys_file):
+            try:
+                with open(keys_file, 'r', encoding='utf-8') as kf:
+                    kdata = json.load(kf)
+                    if kdata.get("api_key") and kdata.get("api_secret"):
+                        api_key = kdata["api_key"].strip()
+                        api_secret = kdata["api_secret"].strip()
+                        key_source = keys_file
+            except Exception as e_kf:
+                print(f"Failed to read {keys_file}: {e_kf}")
+    
+    print(f"Key source: {key_source}")
 
     exchange_params = {
         'enableRateLimit': True,
@@ -188,7 +193,7 @@ try:
         usdt_bal = bal.get("USDT", {})
         print(f"  USDT Wallet Balance: {usdt_bal.get('total') or usdt_bal.get('walletBalance') or 'N/A'}")
 except Exception as e:
-    print(f"❌ API Test failed: {e}")
+    print(f"\u274c API Test failed: {e}")
 
 print("\n" + "=" * 60)
 print("DIAGNOSTICS COMPLETED")

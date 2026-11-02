@@ -8,13 +8,18 @@ except Exception:
     pass
 
 def update_keys():
-    # Якщо передано в аргументах, беремо з них, інакше дефолтні нові ключі
+    """Оновлює Bybit API ключі. Використовує аргументи або env vars (НЕ захардкожені)."""
     if len(sys.argv) >= 3:
         api_key = sys.argv[1].strip()
         api_secret = sys.argv[2].strip()
     else:
-        api_key = "zCzhZb1o1dCCuMlgTn"
-        api_secret = "Rk2Q966qWPwpdK8DvKco0iYixDfW4bwFzRzN"
+        # Беремо з env vars (Render Dashboard)
+        api_key = os.getenv("BYBIT_API_KEY", "").strip()
+        api_secret = os.getenv("BYBIT_API_SECRET", "").strip()
+        if not api_key or not api_secret:
+            print("❌ Використання: python update_keys.py <API_KEY> <API_SECRET>")
+            print("   Або встанови BYBIT_API_KEY та BYBIT_API_SECRET в env vars.")
+            return
 
     data_dir = "/data" if os.path.isdir("/data") else "."
     keys_file = os.path.join(data_dir, "bybit_keys.json")
