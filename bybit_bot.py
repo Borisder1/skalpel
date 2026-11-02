@@ -325,7 +325,8 @@ def get_all_usdt_symbols(exchange, max_symbols=None):
         'ARM', 'AMAT', 'AAOI', 'ASTS', 'ALAB', 'AEHR', 'ANET', 'AAL', 'ABBV', 'ADBE',
         'AMGN', 'APLD', 'ASML', 'ATH', 'AWE', 'AXTI', 'B2', 'B3', 'BAC', 'BAN', 'BBX',
         'COIN', 'MSTR', 'PLTR', 'AMD', 'INTC', 'NFLX', 'DIS', 'PYPL', 'UBER', 'HOOD',
-        '4STOCK', 'GME', 'AMC', 'CRCL'
+        '4STOCK', 'GME', 'AMC', 'CRCL', 'QQQ', 'TQQQ', 'SQQQ', 'SNXX', 'SPY', 'IWM',
+        'DIA', 'SOXX', 'UVXY', 'VIX', 'TLT', 'EEM', 'GLD', 'SLV', 'USO', 'UNG'
     }
     raw_symbols = []
     for symbol, market in exchange.markets.items():
@@ -605,8 +606,13 @@ def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pc
         )
         return order
     except Exception as e:
-        print(f"⚠️ Помилка виставлення демо-ордера на {symbol}: {e}")
-        send_telegram_message(f"❌ <b>Помилка ордера {symbol}:</b> {e}")
+        err_msg = str(e)
+        if "110126" in err_msg:
+            print(f"[{datetime.now()}] 🚫 {symbol} вимагає TradFi угоди (110126). Додаємо в Blacklist.")
+            blacklist_symbol(symbol, "TradFi Agreement Required (110126)")
+        else:
+            print(f"⚠️ Помилка виставлення демо-ордера на {symbol}: {e}")
+            send_telegram_message(f"❌ <b>Помилка ордера {symbol}:</b> {e}")
         return None
 
 

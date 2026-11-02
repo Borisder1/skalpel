@@ -17,7 +17,9 @@ from datetime import datetime
 from news_oracle import get_news_sentiment
 
 # Файл для збереження оптимізованих ваг
-WEIGHTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quant_weights.json")
+# Persistent Disk для збереження навчених ваг AI
+_data_dir = "/data" if os.path.isdir("/data") else os.path.dirname(os.path.abspath(__file__))
+WEIGHTS_FILE = os.path.join(_data_dir, "quant_weights.json")
 
 # Кеш для макроекономічних показників (DXY, Crude Oil, Gold)
 MACRO_CACHE = {

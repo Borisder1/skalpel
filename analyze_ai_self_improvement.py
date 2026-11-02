@@ -21,8 +21,9 @@ from datetime import datetime
 from collections import defaultdict
 
 # DB and weight file paths
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trades_history.db")
-WEIGHTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quant_weights.json")
+_data_dir = "/data" if os.path.isdir("/data") else os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(_data_dir, "trades_history.db")
+WEIGHTS_FILE = os.path.join(_data_dir, "quant_weights.json")
 
 DEFAULT_WEIGHTS = {
     "rr_quality":       0.18,
