@@ -315,22 +315,49 @@ def load_dynamic_config():
     }
 
 def get_all_usdt_symbols(exchange, max_symbols=None):
-    """Отримує всі активні USDT ф'ючерси на Bybit."""
+    """Отримує активні USDT крипто-ф'ючерси на Bybit, відсортовані за 24h об'ємом (ліквідністю)."""
     print(f"[{datetime.now()}] Завантаження списку монет з Bybit...")
     exchange.load_markets()
-    symbols = []
+    
+    # Відсіємо TradFi / US Stocks perps, які вимагають окремої угоди (110126) та не є криптою
+    EXCLUDED_TRADFI = {
+        'AAPL', 'TSLA', 'AMZN', 'MSFT', 'GOOGL', 'GOOG', 'META', 'NVDA', 'BABA',
+        'ARM', 'AMAT', 'AAOI', 'ASTS', 'ALAB', 'AEHR', 'ANET', 'AAL', 'ABBV', 'ADBE',
+        'AMGN', 'APLD', 'ASML', 'ATH', 'AWE', 'AXTI', 'B2', 'B3', 'BAC', 'BAN', 'BBX',
+        'COIN', 'MSTR', 'PLTR', 'AMD', 'INTC', 'NFLX', 'DIS', 'PYPL', 'UBER', 'HOOD',
+        '4STOCK', 'GME', 'AMC', 'CRCL'
+    }
+    raw_symbols = []
     for symbol, market in exchange.markets.items():
         if market.get('linear') and market.get('quote') == 'USDT' and market.get('type') == 'swap':
             if market.get('active'):
-                symbols.append(symbol)
+                base = market.get('base', '')
+                if base not in EXCLUDED_TRADFI:
+                    raw_symbols.append(symbol)
     
-    symbols = sorted(symbols)
+    print(f"[{datetime.now()}] Знайдено {len(raw_symbols)} USDT крипто-пар. Ранжуємо за 24h об'ємом...")
+    try:
+        tickers = exchange.fetch_tickers(params={'category': 'linear'})
+        def get_turnover(sym):
+            t = tickers.get(sym, {}) if isinstance(tickers, dict) else {}
+            info = t.get('info', {}) if isinstance(t, dict) else {}
+            return float(info.get('turnover24h') or t.get('quoteVolume') or 0.0)
+        symbols = sorted(raw_symbols, key=get_turnover, reverse=True)
+        symbols = [s for s in symbols if get_turnover(s) >= 1_000_000]
+        if symbols:
+            top_preview = ", ".join([s.split("/")[0] for s in symbols[:8]])
+            print(f"[{datetime.now()}] 🔝 Топ-ліквідні крипто-пари: {top_preview}...")
+        else:
+            symbols = sorted(raw_symbols)
+    except Exception as e_vol:
+        print(f"[{datetime.now()}] ⚠️ Не вдалося відсортувати за об'ємом: {e_vol}")
+        symbols = sorted(raw_symbols)
 
     if max_symbols:
         print(f"[{datetime.now()}] Обмежуємо сканування до {max_symbols} пар (щоб не впиратись у Rate Limit).")
         symbols = symbols[:max_symbols]
 
-    print(f"[{datetime.now()}] Знайдено {len(symbols)} USDT ф'ючерсних пар для сканування!")
+    print(f"[{datetime.now()}] Знайдено {len(symbols)} ліквідних USDT пар для сканування!")
     return symbols
 
 def init_bybit(config: dict):
@@ -515,14 +542,15 @@ def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pc
             qty_str = exchange.amount_to_precision(symbol, qty * 10)
             qty_val = float(qty_str)
 
-        # FIXED: лімітуємо кількість контрактів згідно біржових min/max, щоб не ловити retCode 10001.
+        # FIXED: лімітуємо кількість контрактів згідно біржових min/max (з урахуванням lotSizeFilter Bybit)
         amount_limits = (market.get("limits", {}) or {}).get("amount", {}) or {}
-        min_qty = amount_limits.get("min")
-        max_qty = amount_limits.get("max")
-        if max_qty is not None and qty_val > float(max_qty):
+        lot_filter = (market.get("info", {}) or {}).get("lotSizeFilter", {}) or {}
+        min_qty = amount_limits.get("min") or lot_filter.get("minOrderQty")
+        max_qty = amount_limits.get("max") or lot_filter.get("maxOrderQty")
+        if max_qty is not None and float(max_qty) > 0 and qty_val > float(max_qty):
             qty_val = float(max_qty)
             qty_str = exchange.amount_to_precision(symbol, qty_val)
-        if min_qty is not None and qty_val < float(min_qty):
+        if min_qty is not None and float(min_qty) > 0 and qty_val < float(min_qty):
             qty_val = float(min_qty)
             qty_str = exchange.amount_to_precision(symbol, qty_val)
         if float(qty_str) <= 0:
@@ -910,11 +938,7 @@ def sync_open_trades(exchange, config: dict):
                     if age_seconds >= 28800:  # V10.1: 8 годин (замість 48)
                         print(f"[{datetime.now()}] 🧠 Віртуальна угода {symbol} застаріла ({age_seconds/3600:.1f} год). Закриваємо за таймаутом.")
                         update_trade_status(symbol=symbol, status="CANCELLED", pnl=0.0, order_id=order_id)
-                        send_telegram_message(
-                            f"🧠 <b>Virtual Trade Timeout</b>\n"
-                            f"Монета: <b>{symbol}</b> ({direction})\n"
-                            f"Віртуальну угоду скасовано після 48 годин очікування."
-                        )
+                        # Path A: не спамимо в Telegram при очистці старих віртуальних угод, щоб не ловити 429
                         return
                 except Exception as e_timeout:
                     print(f"[{datetime.now()}] ⚠️ Помилка перевірки таймауту для {symbol}: {e_timeout}")
