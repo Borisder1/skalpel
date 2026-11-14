@@ -15,8 +15,17 @@ PALIGEMMA_API_KEY = os.getenv("PALIGEMMA_API_KEY", "")
 VISION_MODEL = os.getenv("VISION_MODEL", "")
 
 def _ask_gemini_vision(b64_image: str) -> str:
-    """Виклик безкоштовного Google Gemini 1.5/2.0 Flash через Google AI Studio."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    """Виклик безкоштовного Google Gemini Flash через Google AI Studio."""
+    # Підтримуємо найновіші версії моделей Gemini 2.0 / 1.5
+    models_to_try = [
+        "gemini-2.0-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash-8b",
+        "gemini-2.5-flash"
+    ]
+    if VISION_MODEL and "gemini" in VISION_MODEL:
+        models_to_try.insert(0, VISION_MODEL)
+
     headers = {"Content-Type": "application/json"}
     payload = {
         "contents": [{
@@ -35,26 +44,37 @@ def _ask_gemini_vision(b64_image: str) -> str:
             "maxOutputTokens": 10
         }
     }
-    resp = requests.post(url, headers=headers, json=payload, timeout=20)
-    if resp.status_code == 200:
-        data = resp.json()
-        text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip().upper()
-        if "BULL" in text: return "BULLISH"
-        if "BEAR" in text: return "BEARISH"
-        return "NEUTRAL"
-    else:
-        print(f"[{datetime.now()}] ⚠️ Gemini Vision error: {resp.status_code} {resp.text[:100]}")
-        return "NEUTRAL"
+
+    for model_name in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=20)
+            if resp.status_code == 200:
+                data = resp.json()
+                text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip().upper()
+                if "BULL" in text: return "BULLISH"
+                if "BEAR" in text: return "BEARISH"
+                return "NEUTRAL"
+            elif resp.status_code == 404:
+                continue # Спробуємо наступну версію моделі
+            else:
+                print(f"[{datetime.now()}] ⚠️ Gemini Vision ({model_name}) error: {resp.status_code} {resp.text[:100]}")
+        except Exception as e:
+            print(f"[{datetime.now()}] ⚠️ Gemini Vision ({model_name}) req error: {e}")
+
+    return "NEUTRAL"
 
 def _ask_groq_vision(b64_image: str) -> str:
-    """Виклик безкоштовного Groq Vision (Llama 3.2 11B Vision)."""
+    """Виклик безкоштовного Groq Vision (Llama 3.2 11B Vision Instruct)."""
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
+    # Актуальні моделі Groq (замість застарілої preview)
+    model = VISION_MODEL or "llama-3.2-11b-vision-instruct"
     payload = {
-        "model": VISION_MODEL or "llama-3.2-11b-vision-preview",
+        "model": model,
         "messages": [{
             "role": "user",
             "content": [
@@ -142,7 +162,7 @@ def ask_vision_oracle(df: pd.DataFrame, symbol: str) -> str:
             except Exception as e:
                 print(f"[{datetime.now()}] ⚠️ Gemini Vision exc: {e}")
 
-        # 2. Groq Cloud Vision (Llama 3.2 Vision)
+        # 2. Groq Cloud Vision (Llama 3.2 Vision Instruct)
         if GROQ_API_KEY:
             try:
                 res = _ask_groq_vision(b64_image)
