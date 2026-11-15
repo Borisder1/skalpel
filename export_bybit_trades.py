@@ -84,39 +84,67 @@ def export_trades():
     except Exception as e_bal:
         print(f"⚠️ Не вдалося отримати поточний баланс: {e_bal}\n")
 
-    # 4. Витягуємо Closed PnL (закриті позиції за API v5)
-    print("⏳ Отримання історії закритих позицій (Closed PnL)...")
+    # 4. Витягуємо Closed PnL (закриті позиції за API v5) з повною пагінацією (Cursor)
+    print("⏳ Отримання повної історії закритих позицій (Closed PnL)...")
+    import time
     closed_pnl_records = []
-    try:
-        # Bybit v5 endpoint для історії прибутку/збитку закритих позицій
-        # Отримуємо до 100 останніх закритих угод
-        resp = exchange.privateGetV5PositionClosedPnl({
-            'category': 'linear',
-            'limit': 100
-        })
-        if resp.get('retCode') == 0:
-            closed_pnl_records = resp.get('result', {}).get('list', [])
-            print(f"✅ Успішно отримано {len(closed_pnl_records)} записів закритих позицій!")
-        else:
-            print(f"⚠️ Помилка Bybit API: {resp.get('retMsg')} (code: {resp.get('retCode')})")
-    except Exception as e_pnl:
-        print(f"⚠️ Помилка виклику privateGetV5PositionClosedPnl: {e_pnl}")
+    cursor = None
+    page = 1
+    while True:
+        try:
+            params = {'category': 'linear', 'limit': 100}
+            if cursor:
+                params['cursor'] = cursor
+            resp = exchange.privateGetV5PositionClosedPnl(params)
+            if resp.get('retCode') == 0:
+                result_data = resp.get('result', {})
+                batch = result_data.get('list', [])
+                if not batch:
+                    break
+                closed_pnl_records.extend(batch)
+                print(f"   Сторінка {page}: отримано {len(batch)} позицій (всього: {len(closed_pnl_records)})")
+                cursor = result_data.get('nextPageCursor')
+                if not cursor or len(batch) < 100:
+                    break
+                page += 1
+                time.sleep(0.15)
+            else:
+                print(f"⚠️ Помилка Bybit API: {resp.get('retMsg')} (code: {resp.get('retCode')})")
+                break
+        except Exception as e_pnl:
+            print(f"⚠️ Помилка виклику privateGetV5PositionClosedPnl: {e_pnl}")
+            break
+    print(f"✅ Всього завантажено {len(closed_pnl_records)} записів закритих позицій!")
 
-    # 5. Витягуємо історію виконаних ордерів (Executions / Trades)
+    # 5. Витягуємо історію виконаних ордерів (Executions / Trades) з пагінацією
     print("⏳ Отримання історії виконаних ордерів (Executions)...")
     executions = []
-    try:
-        resp_exec = exchange.privateGetV5ExecutionList({
-            'category': 'linear',
-            'limit': 100
-        })
-        if resp_exec.get('retCode') == 0:
-            executions = resp_exec.get('result', {}).get('list', [])
-            print(f"✅ Успішно отримано {len(executions)} записів виконаних угод!")
-        else:
-            print(f"⚠️ Помилка ExecutionList: {resp_exec.get('retMsg')}")
-    except Exception as e_exec:
-        print(f"⚠️ Помилка виклику ExecutionList: {e_exec}")
+    cursor_exec = None
+    page_exec = 1
+    while True:
+        try:
+            params_exec = {'category': 'linear', 'limit': 100}
+            if cursor_exec:
+                params_exec['cursor'] = cursor_exec
+            resp_exec = exchange.privateGetV5ExecutionList(params_exec)
+            if resp_exec.get('retCode') == 0:
+                result_exec = resp_exec.get('result', {})
+                batch_exec = result_exec.get('list', [])
+                if not batch_exec:
+                    break
+                executions.extend(batch_exec)
+                cursor_exec = result_exec.get('nextPageCursor')
+                if not cursor_exec or len(batch_exec) < 100 or len(executions) >= 500:
+                    break
+                page_exec += 1
+                time.sleep(0.15)
+            else:
+                print(f"⚠️ Помилка ExecutionList: {resp_exec.get('retMsg')}")
+                break
+        except Exception as e_exec:
+            print(f"⚠️ Помилка виклику ExecutionList: {e_exec}")
+            break
+    print(f"✅ Всього отримано {len(executions)} записів виконаних угод!")
 
     # 6. Формуємо зведену таблицю та статистику
     if not closed_pnl_records and not executions:
