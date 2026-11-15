@@ -19,6 +19,12 @@ from telegram_notifier import (
     send_signal_with_buttons,
     poll_telegram_callbacks,
     send_position_opened,
+    send_position_closed,
+    format_tabular_signal,
+    format_tabular_order_opened,
+    format_tabular_position_closed,
+    format_tabular_virtual_opened,
+    format_tabular_tp1,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
 )
@@ -124,6 +130,38 @@ def format_signal(signal: dict) -> str:
         f"📊 R:R = 1:{rr} | ATR={atr_str}\n"
         f"🕐 {datetime.now().strftime('%H:%M %d.%m')}"
     )
+
+
+def calc_dynamic_tp(direction: str, entry: float, sl: float, adx: float, rel_vol: float, is_impulse: bool, default_tp1_rr: float = 1.0, default_tp2_rr: float = 1.8):
+    risk = max(abs(entry - sl), 1e-10)
+    
+    # 1. Трендовий режим: високий ADX (>25) та наявність імпульсу
+    if adx >= 25.0 and is_impulse:
+        tp1_rr = max(default_tp1_rr, 1.0)
+        tp2_rr = max(default_tp2_rr, 1.8)
+        regime_label = f"🚀 ТРЕНД (ADX {adx:.1f})"
+        reasoning = f"Сильний спрямований тренд (ADX={adx:.1f}). Фіксація 50% на TP1 ({tp1_rr:.1f}R) в безубиток, витягування тренду до TP2 ({tp2_rr:.1f}R)."
+    # 2. Флет / боковик: низький ADX (<18) або низький об'єм (<0.85)
+    elif adx < 18.0 or rel_vol < 0.85:
+        tp1_rr = 0.8
+        tp2_rr = 1.2
+        regime_label = f"⚡ СКАЛЬП (Флет {adx:.1f})"
+        reasoning = f"Боковий рух / низька волатильність (ADX={adx:.1f}). Швидкий скальп: короткий тейк TP1={tp1_rr:.1f}R / TP2={tp2_rr:.1f}R для швидкої фіксації."
+    # 3. Збалансований режим (норма)
+    else:
+        tp1_rr = default_tp1_rr
+        tp2_rr = default_tp2_rr
+        regime_label = f"🎯 СТАНДАРТ (ADX {adx:.1f})"
+        reasoning = f"Помірна динаміка ринку. TP1={tp1_rr:.1f}R (фіксація 50%), TP2={tp2_rr:.1f}R."
+
+    if direction == "LONG":
+        tp1_price = entry + risk * tp1_rr
+        tp2_price = entry + risk * tp2_rr
+    else:
+        tp1_price = entry - risk * tp1_rr
+        tp2_price = entry - risk * tp2_rr
+
+    return tp1_price, tp2_price, tp1_rr, tp2_rr, regime_label, reasoning
 
 # Зберігаємо стан для кожної пари (остання свічка, де знайдено сетап)
 last_setup_bars = {}
@@ -596,14 +634,7 @@ def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pc
             order["_bot_max_notional"] = max_notional
         last_order_times[symbol] = now_ts
         
-        send_telegram_message(
-            f"🛒 <b>ОРДЕР ВИСТАВЛЕНО НА DEMO (Market)</b>\n"
-            f"Монета: <b>{symbol}</b> | Напрямок: <b>{direction}</b>\n"
-            f"Ціна сетапу: <b>{price_str}</b>\n"
-            f"Об'єм: <b>{qty_str}</b>\n"
-            f"Stop Loss: <b>{sl:.4f}</b> | Take Profit 2: <b>{tp2:.4f}</b>\n"
-            f"ID ордера: <code>{order.get('id', 'N/A')}</code>"
-        )
+        # Сповіщення в Telegram відправляється через єдиний табельний шаблон у send_position_opened
         return order
     except Exception as e:
         err_msg = str(e)
@@ -671,7 +702,7 @@ def can_open_position(symbol: str, direction: str, open_positions: list, open_or
         return False
             
     # 2. Check global portfolio max concurrent positions and active limit orders limits separately
-    max_positions = int(config.get("max_concurrent_positions", 15))
+    max_positions = int(config.get("max_concurrent_positions", 5))
     max_orders = int(config.get("max_active_orders", 15))
     
     if len(open_positions) >= max_positions:
@@ -873,10 +904,14 @@ def manage_active_positions(exchange, positions: list, config: dict) -> list:
                     record_trade(symbol, "LONG" if side in {"buy", "long"} else "SHORT", entry_price, entry_price * (1.0 + unrealized_pnl/position_notional if position_notional else 1.0), unrealized_pnl)
                     
                     send_telegram_message(
-                        f"🚨 <b>Smart Monitor: Позицію Закрито</b>\n"
-                        f"Монета: <b>{symbol}</b> ({side.upper()})\n"
-                        f"Причина: <code>{close_reason}</code>\n"
-                        f"PnL: <b>{unrealized_pnl:.2f} USDT</b>"
+                        format_tabular_position_closed({
+                            "symbol": symbol,
+                            "side": side,
+                            "entry_price": entry_price,
+                            "exit_price": entry_price * (1.0 + unrealized_pnl/position_notional if position_notional else 1.0),
+                            "pnl": unrealized_pnl,
+                            "reason": close_reason,
+                        })
                     )
                     closed_symbols.append(symbol)
         except Exception as e_pos:
@@ -995,10 +1030,13 @@ def sync_open_trades(exchange, config: dict):
                             set_bybit_position_sl(exchange, symbol, direction, entry_price)
                             update_breakeven_status(symbol=symbol, order_id=order_id, status=1)
                             send_telegram_message(
-                                f"🎉 <b>TP1 Досягнуто! (Безубиток)</b>\n"
-                                f"Монета: <b>{symbol}</b> ({direction})\n"
-                                f"Ціна: {current_price} | TP1: {tp1}\n"
-                                f"🛡 50% об'єму закрито за ринком, SL для решти перенесено в безубиток ({entry_price})."
+                                format_tabular_tp1({
+                                    "symbol": symbol,
+                                    "direction": direction,
+                                    "current_price": current_price,
+                                    "tp1": tp1,
+                                    "entry_price": entry_price,
+                                })
                             )
 
             # 1. Перевіряємо, чи є активна позиція по цьому символу
@@ -1824,6 +1862,27 @@ def run_bot():
                         is_impulse_bull_v = bool(getattr(last_state, "is_impulse_bull", False))
                         is_impulse_bear_v = bool(getattr(last_state, "is_impulse_bear", False))
 
+                        # --- Динамічний розрахунок TP (Dynamic Adaptive Take-Profit) ---
+                        is_imp = is_impulse_bull_v if direction == "LONG" else is_impulse_bear_v
+                        tp1_p, tp2_p, tp1_rr, tp2_rr, tp_regime, tp_reason = calc_dynamic_tp(
+                            direction=direction,
+                            entry=setup.entry,
+                            sl=setup.sl,
+                            adx=adx_v,
+                            rel_vol=vol_v,
+                            is_impulse=is_imp,
+                            default_tp1_rr=float(CONFIG.get("tp1_rr", 1.0)),
+                            default_tp2_rr=float(CONFIG.get("tp2_rr", 1.8)),
+                        )
+                        setup.tp1 = tp1_p
+                        setup.tp2 = tp2_p
+                        signal_payload["tp1"] = tp1_p
+                        signal_payload["tp2"] = tp2_p
+                        signal_payload["tp1_rr"] = tp1_rr
+                        signal_payload["tp2_rr"] = tp2_rr
+                        signal_payload["tp_regime"] = tp_regime
+                        signal_payload["tp_reasoning"] = tp_reason
+
                         quant_res = score_setup(
                             entry=setup.entry,
                             sl=setup.sl,
@@ -1934,13 +1993,7 @@ def run_bot():
                         
                         is_auto_execute = conf >= auto_thresh
                         
-                        if is_auto_execute and TELEGRAM_BOT_TOKEN:
-                            safe_rationale = str(rationale).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                            send_telegram_message(
-                                f"⚡ <b>Quant Auto-Execute ({conf*100:.0f}%)</b>\n"
-                                f"<b>{symbol}</b> {direction_str}\n"
-                                f"<i>{safe_rationale}</i>"
-                            )
+                        # Табельне сповіщення сигналу надсилається нижче через send_signal
                         
                         # Сповіщення в Telegram
                         if require_confirmation and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID and not is_auto_execute:
@@ -2013,10 +2066,16 @@ def run_bot():
                                 factors_snapshot=factors_snapshot,
                             )
                             send_telegram_message(
-                                f"🧠 <b>Virtual Position Opened</b>\n"
-                                f"Монета: <b>{symbol}</b> ({direction_str})\n"
-                                f"Вхід: {setup.entry:.4f} | SL: {setup.sl:.4f} | TP2: {setup.tp2:.4f}\n"
-                                f"Оцінка: {conf*100:.0f}%"
+                                format_tabular_virtual_opened({
+                                    "symbol": symbol,
+                                    "direction": direction,
+                                    "entry": setup.entry,
+                                    "sl": setup.sl,
+                                    "tp2": setup.tp2,
+                                    "quant_score": conf,
+                                    "reason_msg": reason_msg,
+                                    "tp_regime": tp_regime if 'tp_regime' in locals() else "🎯 СТАНДАРТ",
+                                })
                             )
                             continue
 
@@ -2057,6 +2116,13 @@ def run_bot():
                                     "qty": order.get("amount") or order.get("qty") or order.get("_bot_amount") or "N/A",
                                     "sl": setup.sl,
                                     "tp": setup.tp2,
+                                    "tp1": setup.tp1,
+                                    "tp2": setup.tp2,
+                                    "order_id": order.get("id"),
+                                    "tp_regime": tp_regime if 'tp_regime' in locals() else "🎯 СТАНДАРТ",
+                                    "tp_reasoning": tp_reason if 'tp_reason' in locals() else "",
+                                    "active_count": len(positions) + 1,
+                                    "max_positions": max_positions,
                                 })
                                 record_event("order_opened", {"symbol": symbol, "direction": direction, "source": "auto"})
                             elif order is None:

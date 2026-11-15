@@ -20,51 +20,201 @@ def _sanitize_secret(text: object) -> str:
     text = re.sub(r"bot\d+:[A-Za-z0-9_-]+", "bot***", text)
     return text
 
-def send_signal(token, chat_id, signal):
-    direction = signal["direction"]
-    symbol = signal["symbol"].replace("/USDT:USDT", "").replace("/USDT", "")
-    emoji = "🟢 LONG" if direction == "LONG" else "🔴 SHORT"
-
-    def fp(p):
+def format_price(p) -> str:
+    try:
         p = float(p)
-        if p >= 1:
-            return f"{p:.4f}"
-        elif p >= 0.01:
-            return f"{p:.5f}"
-        elif p >= 0.001:
-            return f"{p:.6f}"
-        else:
-            return f"{p:.8f}"
+    except Exception:
+        return str(p)
+    if p >= 100:
+        return f"{p:,.2f}"
+    elif p >= 1:
+        return f"{p:.4f}"
+    elif p >= 0.01:
+        return f"{p:.5f}"
+    elif p >= 0.001:
+        return f"{p:.6f}"
+    return f"{p:.8f}"
 
-    atr = float(signal.get("atr", 0) or 0)
-    atr_str = f"{atr:.6f}" if atr < 0.001 else f"{atr:.4f}"
-    rr = signal.get("rr", 1.5)
 
-    quant_score = signal.get("quant_score") or signal.get("ai_confidence")
-    quant_line = ""
-    if quant_score is not None:
-        quant_line = f"🧠 Оцінка: *{quant_score * 100:.0f}%*\n"
-        rat = signal.get("ai_rationale")
-        if rat:
-            clean_rat = str(rat).replace("*", "").replace("_", "").replace("`", "")
-            quant_line += f"📝 Деталі: _{clean_rat}_\n"
+def format_tabular_signal(signal: dict) -> str:
+    sym = signal.get("symbol", "").replace("/USDT:USDT", "").replace(":USDT", "").replace("/USDT", "")
+    dir_str = str(signal.get("direction", "LONG")).upper()
+    side = "LONG 🟢" if "LONG" in dir_str else "SHORT 🔴"
+    entry = format_price(signal.get("entry", 0))
+    sl = format_price(signal.get("sl", 0))
+    tp1 = format_price(signal.get("tp1", 0))
+    tp2 = format_price(signal.get("tp2", 0))
+    conf = float(signal.get("quant_score", signal.get("ai_confidence", 0)) or 0) * 100
+    regime = signal.get("tp_regime", "🎯 СТАНДАРТ")
+    reason = signal.get("tp_reasoning", "")
+    rat = signal.get("ai_rationale", "")
+    rr = signal.get("tp2_rr", signal.get("rr", 1.8))
+    atr_val = format_price(signal.get("atr", 0))
 
     text = (
-        f"⚡ *{emoji} | {symbol}*\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"📍 Вхід:  *{fp(signal['entry'])}*\n"
-        f"🛡 SL:    *{fp(signal['sl'])}*\n"
-        f"🎯 TP1:  *{fp(signal['tp1'])}*\n"
-        f"🎯 TP2:  *{fp(signal['tp2'])}*\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"📊 R:R = 1:{rr} | ATR={atr_str}\n"
-        f"{quant_line}"
-        f"🕐 {datetime.now().strftime('%H:%M %d.%m')}"
+        f"⚡ <b>SMC RACER • ТОРГОВИЙ СИГНАЛ</b> <code>[{conf:.0f}%]</code>\n"
+        f"💎 <b>{sym}</b> • <b>{side}</b>\n"
+        f"<pre>"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Рівень           Ціна       \n"
+        f"────────────────────────────\n"
+        f"Вхід (Entry)     {entry:>11}\n"
+        f"Стоп-Лосс (SL)   {sl:>11}\n"
+        f"Тейк-1 (50%)     {tp1:>11}\n"
+        f"Тейк-2 (Final)   {tp2:>11}\n"
+        f"────────────────────────────\n"
+        f"🎯 Режим TP  : {regime}\n"
+        f"📊 Ризик R:R : 1:{rr} (ATR {atr_val})\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        f"</pre>"
     )
+    if reason:
+        text += f"\n🎯 <b>Стратегія TP:</b> <i>{reason}</i>"
+    if rat:
+        clean_rat = str(rat).replace("<", "&lt;").replace(">", "&gt;").replace("&", "&amp;")
+        text += f"\n🧠 <b>AI Оцінка:</b> <i>{clean_rat}</i>"
+    return text
 
+
+def format_tabular_order_opened(pos: dict) -> str:
+    sym = pos.get("symbol", "").replace("/USDT:USDT", "").replace(":USDT", "").replace("/USDT", "")
+    side_str = str(pos.get("side", "Buy")).lower()
+    side = "LONG 🟢" if side_str in ["buy", "long"] else "SHORT 🔴"
+    entry = format_price(pos.get("entry_price", 0))
+    sl = format_price(pos.get("sl", 0))
+    tp1 = format_price(pos.get("tp1", pos.get("tp", 0)))
+    tp2 = format_price(pos.get("tp2", pos.get("tp", 0)))
+    qty = str(pos.get("qty", "N/A"))
+    order_id = str(pos.get("order_id", "N/A"))
+    active = pos.get("active_count", 1)
+    max_pos = pos.get("max_positions", 5)
+    regime = pos.get("tp_regime", "🎯 СТАНДАРТ")
+    reason = pos.get("tp_reasoning", "")
+
+    text = (
+        f"🛒 <b>BYBIT DEMO • ОРДЕР ВИСТАВЛЕНО</b>\n"
+        f"💎 <b>{sym}</b> • <b>{side}</b> (Market)\n"
+        f"<pre>"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Параметр         Значення   \n"
+        f"────────────────────────────\n"
+        f"Вхід (Entry)     {entry:>11}\n"
+        f"Стоп-Лосс (SL)   {sl:>11}\n"
+        f"Тейк-1 (50%)     {tp1:>11}\n"
+        f"Тейк-2 (Final)   {tp2:>11}\n"
+        f"Об'єм лоту       {qty:>11}\n"
+        f"────────────────────────────\n"
+        f"🎯 Режим TP  : {regime}\n"
+        f"💼 Портфель  : {active} / {max_pos} активних\n"
+        f"🆔 Ордер ID  : {order_id}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        f"</pre>"
+    )
+    if reason:
+        text += f"\n💡 <i>{reason}</i>"
+    return text
+
+
+def format_tabular_position_closed(pos: dict) -> str:
+    sym = pos.get("symbol", "").replace("/USDT:USDT", "").replace(":USDT", "").replace("/USDT", "")
+    pnl = float(pos.get("pnl", 0))
+    pnl_sign = "+" if pnl >= 0 else ""
+    res_str = f"🟢 WIN ({pnl_sign}{pnl:.2f}$)" if pnl > 0 else (f"🔴 LOSS ({pnl:.2f}$)" if pnl < 0 else "⚪ BE (0.00$)")
+    side_str = str(pos.get("side", "Buy")).lower()
+    side = "LONG 🟢" if side_str in ["buy", "long"] else "SHORT 🔴"
+    entry = format_price(pos.get("entry_price", 0))
+    exit_p = format_price(pos.get("exit_price", 0))
+    reason = str(pos.get("reason", "Закрито за алгоритмом"))
+    balance = float(pos.get("balance", 0))
+    bal_str = f"{balance:,.2f} USDT" if balance > 0 else ""
+
+    text = (
+        f"💰 <b>BYBIT DEMO • ЗАКРИТТЯ ПОЗИЦІЇ</b>\n"
+        f"💎 <b>{sym}</b> • <b>{side}</b>\n"
+        f"<pre>"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Метрика          Показник   \n"
+        f"────────────────────────────\n"
+        f"Ціна входу       {entry:>11}\n"
+        f"Ціна виходу      {exit_p:>11}\n"
+        f"Чистий PnL       {pnl_sign}{pnl:>8.2f} $\n"
+        f"Результат        {res_str:>11}\n"
+        f"────────────────────────────\n"
+        f"Причина  : {reason}\n"
+    )
+    if bal_str:
+        text += f"Баланс   : {bal_str}\n"
+    text += (
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        f"</pre>"
+    )
+    return text
+
+
+def format_tabular_virtual_opened(pos: dict) -> str:
+    sym = pos.get("symbol", "").replace("/USDT:USDT", "").replace(":USDT", "").replace("/USDT", "")
+    dir_str = str(pos.get("direction", "LONG")).upper()
+    side = "LONG 🟢" if "LONG" in dir_str else "SHORT 🔴"
+    entry = format_price(pos.get("entry", 0))
+    sl = format_price(pos.get("sl", 0))
+    tp2 = format_price(pos.get("tp2", 0))
+    conf = float(pos.get("quant_score", 0)) * 100
+    reason_msg = str(pos.get("reason_msg", "Тест алгоритму"))
+    regime = pos.get("tp_regime", "🎯 СТАНДАРТ")
+
+    text = (
+        f"🧠 <b>SMC RACER • ВІРТУАЛЬНИЙ ТЕСТ</b>\n"
+        f"💎 <b>{sym}</b> • <b>{side}</b>\n"
+        f"<pre>"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Параметр         Рівень     \n"
+        f"────────────────────────────\n"
+        f"Вхід (Entry)     {entry:>11}\n"
+        f"Стоп-Лосс (SL)   {sl:>11}\n"
+        f"Тейк-Профіт (TP) {tp2:>11}\n"
+        f"Оцінка AI        {conf:>10.0f}%\n"
+        f"────────────────────────────\n"
+        f"Режим TP : {regime}\n"
+        f"Причина  : {reason_msg}\n"
+        f"Навчання : онлайн (/data)  \n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        f"</pre>"
+    )
+    return text
+
+
+def format_tabular_tp1(pos: dict) -> str:
+    sym = pos.get("symbol", "").replace("/USDT:USDT", "").replace(":USDT", "").replace("/USDT", "")
+    dir_str = str(pos.get("direction", "LONG")).upper()
+    side = "LONG 🟢" if "LONG" in dir_str else "SHORT 🔴"
+    current_p = format_price(pos.get("current_price", 0))
+    tp1 = format_price(pos.get("tp1", 0))
+    entry = format_price(pos.get("entry_price", 0))
+
+    text = (
+        f"🎉 <b>SMC RACER • TP1 ДОСЯГНУТО!</b>\n"
+        f"💎 <b>{sym}</b> • <b>{side}</b>\n"
+        f"<pre>"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Подія            Значення   \n"
+        f"────────────────────────────\n"
+        f"Поточна ціна     {current_p:>11}\n"
+        f"Рівень TP1       {tp1:>11}\n"
+        f"Новий SL (Б/У)   {entry:>11}\n"
+        f"────────────────────────────\n"
+        f"Фіксація : 50% об'єму (WIN) \n"
+        f"Захист   : SL перенесено в 0\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        f"</pre>"
+    )
+    return text
+
+
+def send_signal(token, chat_id, signal):
+    text = format_tabular_signal(signal)
     resp = requests.post(
         f"https://api.telegram.org/bot{token}/sendMessage",
-        json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+        json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
         timeout=10,
     )
     try:
@@ -77,87 +227,26 @@ def send_signal(token, chat_id, signal):
 
 
 def send_position_opened(token, chat_id, pos):
-    symbol = pos["symbol"].replace("/USDT:USDT", "")
-    emoji = "🟢" if pos["side"] == "Buy" else "🔴"
-    side = "LONG" if pos["side"] == "Buy" else "SHORT"
-    text = (
-        f"✅ *ПОЗИЦІЯ ВІДКРИТА*\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"{emoji} *{side} | {symbol}*\n"
-        f"📍 Ціна входу: *{pos['entry_price']}*\n"
-        f"📦 Розмір: *{pos['qty']}*\n"
-        f"🛡 SL: *{pos['sl']}*\n"
-        f"🎯 TP: *{pos['tp']}*\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"🕐 {datetime.now().strftime('%H:%M %d.%m')}"
-    )
+    text = format_tabular_order_opened(pos)
     return requests.post(
         f"https://api.telegram.org/bot{token}/sendMessage",
-        json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+        json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
         timeout=10,
     )
 
 
 def send_position_closed(token, chat_id, pos):
-    symbol = pos["symbol"].replace("/USDT:USDT", "")
-    pnl = float(pos.get("pnl", 0))
-    pnl_emoji = "💰" if pnl > 0 else "💸"
-    pnl_sign = "+" if pnl > 0 else ""
-    text = (
-        f"{pnl_emoji} *ПОЗИЦІЯ ЗАКРИТА*\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"*{symbol}*\n"
-        f"📍 Вхід:  *{pos['entry_price']}*\n"
-        f"📍 Вихід: *{pos['exit_price']}*\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"📊 PnL: *{pnl_sign}{pnl:.4f} USDT*\n"
-        f"🕐 {datetime.now().strftime('%H:%M %d.%m')}"
-    )
+    text = format_tabular_position_closed(pos)
     return requests.post(
         f"https://api.telegram.org/bot{token}/sendMessage",
-        json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+        json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
         timeout=10,
     )
 
 
 def send_signal_with_buttons(token, chat_id, signal):
     signal_id = signal["id"]
-    direction = signal["direction"]
-    symbol = signal["symbol"].replace("/USDT:USDT", "").replace("/USDT", "")
-    emoji = "🟢 LONG" if direction == "LONG" else "🔴 SHORT"
-    def fp(p):
-        p = float(p)
-        if p >= 1:
-            return f"{p:.4f}"
-        elif p >= 0.01:
-            return f"{p:.5f}"
-        elif p >= 0.001:
-            return f"{p:.6f}"
-        return f"{p:.8f}"
-
-    atr = float(signal.get("atr", 0) or 0)
-    atr_str = f"{atr:.6f}" if atr < 0.001 else f"{atr:.4f}"
-    quant_score = signal.get("quant_score") or signal.get("ai_confidence")
-    quant_line = ""
-    if quant_score is not None:
-        quant_line = f"🧠 Оцінка: *{quant_score * 100:.0f}%*\n"
-        rat = signal.get("ai_rationale")
-        if rat:
-            clean_rat = str(rat).replace("*", "").replace("_", "").replace("`", "")
-            quant_line += f"📝 Деталі: _{clean_rat}_\n"
-
-    text = (
-        f"⚡ *{emoji} | {symbol}*\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"📍 Вхід: *{fp(signal['entry'])}*\n"
-        f"🛡 SL: *{fp(signal['sl'])}*\n"
-        f"🎯 TP1: *{fp(signal['tp1'])}*\n"
-        f"🎯 TP2: *{fp(signal['tp2'])}*\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"📊 ATR={atr_str}\n"
-        f"{quant_line}"
-        f"Підтвердити відкриття позиції?"
-    )
+    text = format_tabular_signal(signal)
     keyboard = {
         "inline_keyboard": [[
             {"text": "✅ Відкрити позицію", "callback_data": f"confirm_{signal_id}"},
@@ -166,10 +255,9 @@ def send_signal_with_buttons(token, chat_id, signal):
     }
     return requests.post(
         f"https://api.telegram.org/bot{token}/sendMessage",
-        json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "reply_markup": keyboard},
+        json={"chat_id": chat_id, "text": text, "parse_mode": "HTML", "reply_markup": keyboard},
         timeout=10,
     )
-
 
 def answer_callback(token, callback_id, text):
     return requests.post(
