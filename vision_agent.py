@@ -4,6 +4,9 @@ import base64
 import requests
 import json
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import mplfinance as mpf
 from datetime import datetime
 
@@ -150,6 +153,7 @@ def ask_vision_oracle(df: pd.DataFrame, symbol: str) -> str:
         mpf.plot(plot_df, type='candle', style=s, volume=True, savefig=dict(fname=buf, dpi=80, bbox_inches='tight', pad_inches=0.1))
         buf.seek(0)
         b64_image = base64.b64encode(buf.read()).decode('utf-8')
+        plt.close('all')
 
         print(f"[{datetime.now()}] 👁️ Аналіз графіка {symbol} через Vision AI...")
 
@@ -184,3 +188,12 @@ def ask_vision_oracle(df: pd.DataFrame, symbol: str) -> str:
     except Exception as e:
         print(f"[{datetime.now()}] ⚠️ Помилка генерації графіка: {e}")
         return "NEUTRAL"
+    finally:
+        try:
+            plt.close('all')
+            if 'buf' in locals() and buf:
+                buf.close()
+        except Exception:
+            pass
+        import gc
+        gc.collect()

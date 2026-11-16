@@ -21,17 +21,18 @@
   "vol_mult": 1.0,
   "vol_multiplier_min": 0.6,
   "fvg_min_size": 0.08,
-  "max_symbols": 120,
+  "max_symbols": 40,
   "symbol_offset": 0,
-  "scout_top_n": 40,
-  "rotate_step": 20,
+  "scout_top_n": 25,
+  "rotate_step": 15,
   "leverage": 3.0,
   "max_position_notional_pct": 30.0,
   "max_active_orders": 15,
   "max_concurrent_positions": 5,
   "max_order_age_seconds": 7200,
   "auto_execute_confidence_threshold": 0.65,
-  "max_position_loss_usd": 500.0,
+  "max_position_loss_usd": 300.0,
   "take_profit_pct_of_size": 50.0,
-  "max_position_age_seconds": 14400
+  "max_position_age_seconds": 14400,
+  "max_trade_risk_usd": 250.0
 }

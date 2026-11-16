@@ -562,6 +562,13 @@ def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pc
         # V11.3: Risk cap збільшено до 2.0% (було 1.0%) — конфіг керує через risk_pct
         risk_pct = min(max(float(risk_pct), 0.1), 2.0)
         risk_amount = free_usdt * (risk_pct / 100.0)
+        
+        # V11.4: Жорсткий доларовий ліміт ризику на одну угоду (захист від великих просадок при великому балансі)
+        max_trade_risk = float(CONFIG.get("max_trade_risk_usd", 250.0))
+        if risk_amount > max_trade_risk:
+            print(f"[{datetime.now()}] 🛡️ Risk capped by max_trade_risk_usd: {risk_amount:.2f}$ -> {max_trade_risk:.2f}$")
+            risk_amount = max_trade_risk
+
         qty = risk_amount / price_diff
         leverage = min(max(float(leverage), 1.0), 10.0)
         max_position_notional_pct = min(max(float(max_position_notional_pct), 1.0), 100.0)
@@ -1230,6 +1237,9 @@ def sync_open_trades(exchange, config: dict):
                         risk_pct = float(config.get("risk_pct", 1.0))
                         risk_pct = min(max(risk_pct, 0.1), 1.0)
                         risk_amount = free_usdt * (risk_pct / 100.0)
+                        max_trade_risk = float(config.get("max_trade_risk_usd", 250.0))
+                        if risk_amount > max_trade_risk:
+                            risk_amount = max_trade_risk
                         price_diff = abs(entry_price - sl)
                         if price_diff <= 0:
                             price_diff = entry_price * 0.02
@@ -2268,7 +2278,18 @@ def run_bot():
         except Exception as ef:
             print(f"[{datetime.now()}] ⚠️ Помилка оцінки фіч: {ef}")
 
-        # V10.2: Очищення пам'яті для уникнення OOM на Render
+        # V11.4: Глибоке очищення пам'яті для уникнення OOM на Render (512MB RAM cap)
+        try:
+            import matplotlib.pyplot as plt
+            plt.close('all')
+        except Exception:
+            pass
+        if 'parallel_data' in locals():
+            del parallel_data
+        if 'data_15m' in locals():
+            del data_15m
+        if 'data_4h' in locals():
+            del data_4h
         import gc
         gc.collect()
 

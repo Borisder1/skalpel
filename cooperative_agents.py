@@ -141,35 +141,11 @@ class TradeDiagnosticsAgent:
 
     def propose_optimization(self, df_dict: dict, base_config: dict) -> dict:
         """
-        Запускає оптимізацію Grid Search на історичних даних для пошуку найкращих параметрів.
+        Захист від OOM на Render: важкий Grid Search відключено на живому сервері (використовується лише офлайн).
+        Онлайн-навчання безпечно виконує quant_engine.py без споживання RAM.
         """
-        try:
-            print(f"[{self.name}] Запуск Grid Search оптимізації для покращення параметрів...")
-            opt_df = optimize(
-                df_dict,
-                grid=RACER_FAST_GRID,
-                base_params=base_config,
-                sort_by="net_pnl_pct",
-                top_n=5,
-                verbose=False,
-                strategy_name="racer"
-            )
-            
-            if opt_df.empty:
-                return {}
-            
-            best_run = opt_df.iloc[0].to_dict()
-            return {
-                "fib_level": float(best_run.get("fib_level", base_config["fib_level"])),
-                "sl_atr_mult": float(best_run.get("sl_atr_mult", base_config["sl_atr_mult"])),
-                "tp1_rr": float(best_run.get("tp1_rr", base_config["tp1_rr"])),
-                "tp2_rr": float(best_run.get("tp2_rr", base_config["tp2_rr"])),
-                "net_pnl_pct": float(best_run.get("net_pnl_pct", 0.0)),
-                "win_rate": float(best_run.get("win_rate", 0.0))
-            }
-        except Exception as e:
-            print(f"[{self.name}] Помилка під час оптимізації: {e}")
-            return {}
+        print(f"[{self.name}] Grid Search оптимізація пропущена для захисту пам'яті контейнера (<512MB RAM).")
+        return {}
 
 
 class DecisionAgent:
