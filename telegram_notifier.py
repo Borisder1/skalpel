@@ -20,13 +20,17 @@ def _sanitize_secret(text: object) -> str:
     text = re.sub(r"bot\d+:[A-Za-z0-9_-]+", "bot***", text)
     return text
 
+import html as _html
+
+
 def format_price(p) -> str:
+    """Ціна БЕЗ розділювачів тисяч — щоб її можна було одразу вставити в біржу."""
     try:
         p = float(p)
     except Exception:
         return str(p)
     if p >= 100:
-        return f"{p:,.2f}"
+        return f"{p:.2f}"
     elif p >= 1:
         return f"{p:.4f}"
     elif p >= 0.01:
@@ -36,228 +40,195 @@ def format_price(p) -> str:
     return f"{p:.8f}"
 
 
+def _esc(x) -> str:
+    return _html.escape(str(x or ""), quote=False)
+
+
+def _sym(raw: str) -> str:
+    """BTC/USDT:USDT -> BTCUSDT (формат для пошуку на біржі)."""
+    return str(raw or "").replace("/USDT:USDT", "USDT").replace(":USDT", "").replace("/", "")
+
+
+def _is_long(x) -> bool:
+    return str(x or "").lower() in ("long", "buy")
+
+
+def _pct(entry, level) -> str:
+    try:
+        e, l = float(entry), float(level)
+        if e <= 0:
+            return ""
+        return f"{(l - e) / e * 100:+.2f}%"
+    except Exception:
+        return ""
+
+
+def _copy_keyboard(symbol: str, entry, sl, tp1, tp2) -> dict:
+    """Кнопки, які копіюють у буфер ЛИШЕ одне значення (Telegram CopyTextButton)."""
+    def btn(label, value):
+        return {"text": label, "copy_text": {"text": str(value)}}
+    return {"inline_keyboard": [
+        [btn(f"📋 {symbol}", symbol), btn("📋 Вхід", format_price(entry))],
+        [btn("📋 SL", format_price(sl)), btn("📋 TP1", format_price(tp1)), btn("📋 TP2", format_price(tp2))],
+    ]}
+
+
+def _levels_block(direction, entry, sl, tp1, tp2) -> str:
+    return (
+        "<blockquote>"
+        f"📍 <b>ВХІД</b>   <code>{format_price(entry)}</code>\n"
+        f"🛡 <b>STOP</b>   <code>{format_price(sl)}</code>  <i>{_pct(entry, sl)}</i>\n"
+        f"🎯 <b>TP 1</b>   <code>{format_price(tp1)}</code>  <i>{_pct(entry, tp1)}</i>\n"
+        f"🏁 <b>TP 2</b>   <code>{format_price(tp2)}</code>  <i>{_pct(entry, tp2)}</i>"
+        "</blockquote>"
+    )
+
+
+def _header(direction, symbol, title) -> str:
+    side = "🟢 <b>LONG</b>" if _is_long(direction) else "🔴 <b>SHORT</b>"
+    return f"<b>{title}</b>\n\n{side}  ·  💎 <b>{_esc(symbol)}</b>  ·  <code>{_esc(symbol)}</code>\n"
+
+
+COPY_HINT = "👆 <i>Торкніться значення або кнопки нижче — скопіюється тільки воно</i>"
+
+
 def format_tabular_signal(signal: dict) -> str:
-    sym = signal.get("symbol", "").replace("/USDT:USDT", "").replace(":USDT", "").replace("/USDT", "")
-    dir_str = str(signal.get("direction", "LONG")).upper()
-    side = "LONG 🟢" if "LONG" in dir_str else "SHORT 🔴"
-    entry = format_price(signal.get("entry", 0))
-    sl = format_price(signal.get("sl", 0))
-    tp1 = format_price(signal.get("tp1", 0))
-    tp2 = format_price(signal.get("tp2", 0))
+    sym = _sym(signal.get("symbol"))
+    direction = signal.get("direction", "LONG")
+    entry, sl = signal.get("entry", 0), signal.get("sl", 0)
+    tp1, tp2 = signal.get("tp1", 0), signal.get("tp2", 0)
     conf = float(signal.get("quant_score", signal.get("ai_confidence", 0)) or 0) * 100
     regime = signal.get("tp_regime", "🎯 СТАНДАРТ")
     reason = signal.get("tp_reasoning", "")
     rat = signal.get("ai_rationale", "")
     rr = signal.get("tp2_rr", signal.get("rr", 1.8))
-    atr_val = format_price(signal.get("atr", 0))
 
-    text = (
-        f"⚡ <b>SMC RACER • ТОРГОВИЙ СИГНАЛ</b> <code>[{conf:.0f}%]</code>\n"
-        f"💎 <b>{sym}</b> • <b>{side}</b>\n"
-        f"<pre>"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Рівень           Ціна       \n"
-        f"────────────────────────────\n"
-        f"Вхід (Entry)     {entry:>11}\n"
-        f"Стоп-Лосс (SL)   {sl:>11}\n"
-        f"Тейк-1 (50%)     {tp1:>11}\n"
-        f"Тейк-2 (Final)   {tp2:>11}\n"
-        f"────────────────────────────\n"
-        f"🎯 Режим TP  : {regime}\n"
-        f"📊 Ризик R:R : 1:{rr} (ATR {atr_val})\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        f"</pre>"
-    )
+    text = _header(direction, sym, "⚡ SMC RACER  ·  НОВИЙ СИГНАЛ")
+    text += f"🧠 Оцінка AI: <b>{conf:.0f}%</b>   ·   ⚖️ R:R <b>1:{_esc(rr)}</b>\n\n"
+    text += _levels_block(direction, entry, sl, tp1, tp2) + "\n"
+    text += f"🧭 <b>Режим TP:</b> {_esc(regime)}\n"
     if reason:
-        text += f"\n🎯 <b>Стратегія TP:</b> <i>{reason}</i>"
+        text += f"💡 <i>{_esc(reason)}</i>\n"
     if rat:
-        clean_rat = str(rat).replace("<", "&lt;").replace(">", "&gt;").replace("&", "&amp;")
-        text += f"\n🧠 <b>AI Оцінка:</b> <i>{clean_rat}</i>"
+        text += f"<blockquote expandable>🧠 <b>Чому вхід:</b>\n{_esc(rat)}</blockquote>\n"
+    text += f"\n{COPY_HINT}"
     return text
 
 
 def format_tabular_order_opened(pos: dict) -> str:
-    sym = pos.get("symbol", "").replace("/USDT:USDT", "").replace(":USDT", "").replace("/USDT", "")
-    side_str = str(pos.get("side", "Buy")).lower()
-    side = "LONG 🟢" if side_str in ["buy", "long"] else "SHORT 🔴"
-    entry = format_price(pos.get("entry_price", 0))
-    sl = format_price(pos.get("sl", 0))
-    tp1 = format_price(pos.get("tp1", pos.get("tp", 0)))
-    tp2 = format_price(pos.get("tp2", pos.get("tp", 0)))
-    qty = str(pos.get("qty", "N/A"))
-    order_id = str(pos.get("order_id", "N/A"))
-    active = pos.get("active_count", 1)
-    max_pos = pos.get("max_positions", 5)
-    regime = pos.get("tp_regime", "🎯 СТАНДАРТ")
-    reason = pos.get("tp_reasoning", "")
-
-    text = (
-        f"🛒 <b>BYBIT DEMO • ОРДЕР ВИСТАВЛЕНО</b>\n"
-        f"💎 <b>{sym}</b> • <b>{side}</b> (Market)\n"
-        f"<pre>"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Параметр         Значення   \n"
-        f"────────────────────────────\n"
-        f"Вхід (Entry)     {entry:>11}\n"
-        f"Стоп-Лосс (SL)   {sl:>11}\n"
-        f"Тейк-1 (50%)     {tp1:>11}\n"
-        f"Тейк-2 (Final)   {tp2:>11}\n"
-        f"Об'єм лоту       {qty:>11}\n"
-        f"────────────────────────────\n"
-        f"🎯 Режим TP  : {regime}\n"
-        f"💼 Портфель  : {active} / {max_pos} активних\n"
-        f"🆔 Ордер ID  : {order_id}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        f"</pre>"
+    sym = _sym(pos.get("symbol"))
+    direction = pos.get("side", "Buy")
+    entry, sl = pos.get("entry_price", 0), pos.get("sl", 0)
+    tp1 = pos.get("tp1", pos.get("tp", 0))
+    tp2 = pos.get("tp2", pos.get("tp", 0))
+    text = _header(direction, sym, "🛒 BYBIT DEMO  ·  ОРДЕР ВИКОНАНО")
+    text += _levels_block(direction, entry, sl, tp1, tp2) + "\n"
+    text += (
+        f"📦 Об'єм: <code>{_esc(pos.get('qty', 'N/A'))}</code>\n"
+        f"🧭 Режим TP: {_esc(pos.get('tp_regime', '🎯 СТАНДАРТ'))}\n"
+        f"💼 Портфель: <b>{_esc(pos.get('active_count', 1))} / {_esc(pos.get('max_positions', 5))}</b>\n"
+        f"🆔 <code>{_esc(pos.get('order_id', 'N/A'))}</code>\n"
     )
-    if reason:
-        text += f"\n💡 <i>{reason}</i>"
+    if pos.get("tp_reasoning"):
+        text += f"💡 <i>{_esc(pos.get('tp_reasoning'))}</i>\n"
+    text += f"\n{COPY_HINT}"
     return text
 
 
 def format_tabular_position_closed(pos: dict) -> str:
-    sym = pos.get("symbol", "").replace("/USDT:USDT", "").replace(":USDT", "").replace("/USDT", "")
-    pnl = float(pos.get("pnl", 0))
-    pnl_sign = "+" if pnl >= 0 else ""
-    res_str = f"🟢 WIN ({pnl_sign}{pnl:.2f}$)" if pnl > 0 else (f"🔴 LOSS ({pnl:.2f}$)" if pnl < 0 else "⚪ BE (0.00$)")
-    side_str = str(pos.get("side", "Buy")).lower()
-    side = "LONG 🟢" if side_str in ["buy", "long"] else "SHORT 🔴"
-    entry = format_price(pos.get("entry_price", 0))
-    exit_p = format_price(pos.get("exit_price", 0))
-    reason = str(pos.get("reason", "Закрито за алгоритмом"))
-    balance = float(pos.get("balance", 0))
-    bal_str = f"{balance:,.2f} USDT" if balance > 0 else ""
-
-    text = (
-        f"💰 <b>BYBIT DEMO • ЗАКРИТТЯ ПОЗИЦІЇ</b>\n"
-        f"💎 <b>{sym}</b> • <b>{side}</b>\n"
-        f"<pre>"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Метрика          Показник   \n"
-        f"────────────────────────────\n"
-        f"Ціна входу       {entry:>11}\n"
-        f"Ціна виходу      {exit_p:>11}\n"
-        f"Чистий PnL       {pnl_sign}{pnl:>8.2f} $\n"
-        f"Результат        {res_str:>11}\n"
-        f"────────────────────────────\n"
-        f"Причина  : {reason}\n"
-    )
-    if bal_str:
-        text += f"Баланс   : {bal_str}\n"
+    sym = _sym(pos.get("symbol"))
+    pnl = float(pos.get("pnl", 0) or 0)
+    if pnl > 0:
+        badge = f"🟢 <b>WIN  +{pnl:,.2f} USDT</b>"
+    elif pnl < 0:
+        badge = f"🔴 <b>LOSS  {pnl:,.2f} USDT</b>"
+    else:
+        badge = "⚪ <b>BREAKEVEN  0.00 USDT</b>"
+    text = _header(pos.get("side", "Buy"), sym, "💰 BYBIT DEMO  ·  ПОЗИЦІЮ ЗАКРИТО")
+    text += f"\n{badge}\n\n"
     text += (
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        f"</pre>"
+        "<blockquote>"
+        f"📍 Вхід    <code>{format_price(pos.get('entry_price', 0))}</code>\n"
+        f"🚪 Вихід   <code>{format_price(pos.get('exit_price', 0))}</code>\n"
+        f"📝 Причина: <i>{_esc(pos.get('reason', 'Закрито за алгоритмом'))}</i>"
+        "</blockquote>"
     )
+    bal = float(pos.get("balance", 0) or 0)
+    if bal > 0:
+        text += f"\n🏦 Баланс: <b>{bal:,.2f} USDT</b>"
     return text
 
 
 def format_tabular_virtual_opened(pos: dict) -> str:
-    sym = pos.get("symbol", "").replace("/USDT:USDT", "").replace(":USDT", "").replace("/USDT", "")
-    dir_str = str(pos.get("direction", "LONG")).upper()
-    side = "LONG 🟢" if "LONG" in dir_str else "SHORT 🔴"
-    entry = format_price(pos.get("entry", 0))
-    sl = format_price(pos.get("sl", 0))
-    tp2 = format_price(pos.get("tp2", 0))
-    conf = float(pos.get("quant_score", 0)) * 100
-    reason_msg = str(pos.get("reason_msg", "Тест алгоритму"))
-    regime = pos.get("tp_regime", "🎯 СТАНДАРТ")
-
-    text = (
-        f"🧠 <b>SMC RACER • ВІРТУАЛЬНИЙ ТЕСТ</b>\n"
-        f"💎 <b>{sym}</b> • <b>{side}</b>\n"
-        f"<pre>"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Параметр         Рівень     \n"
-        f"────────────────────────────\n"
-        f"Вхід (Entry)     {entry:>11}\n"
-        f"Стоп-Лосс (SL)   {sl:>11}\n"
-        f"Тейк-Профіт (TP) {tp2:>11}\n"
-        f"Оцінка AI        {conf:>10.0f}%\n"
-        f"────────────────────────────\n"
-        f"Режим TP : {regime}\n"
-        f"Причина  : {reason_msg}\n"
-        f"Навчання : онлайн (/data)  \n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        f"</pre>"
+    sym = _sym(pos.get("symbol"))
+    conf = float(pos.get("quant_score", 0) or 0) * 100
+    text = _header(pos.get("direction", "LONG"), sym, "🧪 ВІРТУАЛЬНИЙ ТЕСТ  ·  без реального ордера")
+    text += (
+        "<blockquote>"
+        f"📍 Вхід   <code>{format_price(pos.get('entry', 0))}</code>\n"
+        f"🛡 Стоп   <code>{format_price(pos.get('sl', 0))}</code>\n"
+        f"🏁 Тейк   <code>{format_price(pos.get('tp2', 0))}</code>"
+        "</blockquote>\n"
+        f"🧠 Оцінка: <b>{conf:.0f}%</b>  ·  🧭 {_esc(pos.get('tp_regime', '🎯 СТАНДАРТ'))}\n"
+        f"📝 Причина: <i>{_esc(pos.get('reason_msg', 'Тест алгоритму'))}</i>"
     )
     return text
 
 
 def format_tabular_tp1(pos: dict) -> str:
-    sym = pos.get("symbol", "").replace("/USDT:USDT", "").replace(":USDT", "").replace("/USDT", "")
-    dir_str = str(pos.get("direction", "LONG")).upper()
-    side = "LONG 🟢" if "LONG" in dir_str else "SHORT 🔴"
-    current_p = format_price(pos.get("current_price", 0))
-    tp1 = format_price(pos.get("tp1", 0))
-    entry = format_price(pos.get("entry_price", 0))
-
-    text = (
-        f"🎉 <b>SMC RACER • TP1 ДОСЯГНУТО!</b>\n"
-        f"💎 <b>{sym}</b> • <b>{side}</b>\n"
-        f"<pre>"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Подія            Значення   \n"
-        f"────────────────────────────\n"
-        f"Поточна ціна     {current_p:>11}\n"
-        f"Рівень TP1       {tp1:>11}\n"
-        f"Новий SL (Б/У)   {entry:>11}\n"
-        f"────────────────────────────\n"
-        f"Фіксація : 50% об'єму (WIN) \n"
-        f"Захист   : SL перенесено в 0\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        f"</pre>"
+    sym = _sym(pos.get("symbol"))
+    text = _header(pos.get("direction", "LONG"), sym, "🎉 TP1 ДОСЯГНУТО  ·  50% зафіксовано")
+    text += (
+        "<blockquote>"
+        f"💹 Ціна     <code>{format_price(pos.get('current_price', 0))}</code>\n"
+        f"🎯 TP1      <code>{format_price(pos.get('tp1', 0))}</code>\n"
+        f"🛡 Новий SL <code>{format_price(pos.get('entry_price', 0))}</code>  <i>(беззбиток)</i>"
+        "</blockquote>"
     )
     return text
 
 
-def send_signal(token, chat_id, signal):
-    text = format_tabular_signal(signal)
-    resp = requests.post(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
-        timeout=10,
-    )
-    try:
-        j = resp.json()
-    except Exception:
-        j = {"ok": False, "raw": resp.text}
-    if not j.get("ok"):
-        logger.warning(f"TG помилка: {j}")
+def _post(token, chat_id, text, reply_markup=None):
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    resp = requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json=payload, timeout=10)
+    if resp.status_code != 200 and reply_markup:
+        # Fallback: якщо клієнт/API не підтримує copy-кнопки — шлемо без них
+        logger.warning(f"TG помилка з кнопками, повтор без них: {_sanitize_secret(resp.text)[:200]}")
+        payload.pop("reply_markup", None)
+        resp = requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json=payload, timeout=10)
+    if resp.status_code != 200:
+        logger.warning(f"TG помилка: {_sanitize_secret(resp.text)[:300]}")
     return resp
 
 
+def send_signal(token, chat_id, signal):
+    kb = _copy_keyboard(_sym(signal.get("symbol")), signal.get("entry", 0), signal.get("sl", 0),
+                        signal.get("tp1", 0), signal.get("tp2", 0))
+    return _post(token, chat_id, format_tabular_signal(signal), kb)
+
+
 def send_position_opened(token, chat_id, pos):
-    text = format_tabular_order_opened(pos)
-    return requests.post(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
-        timeout=10,
-    )
+    kb = _copy_keyboard(_sym(pos.get("symbol")), pos.get("entry_price", 0), pos.get("sl", 0),
+                        pos.get("tp1", pos.get("tp", 0)), pos.get("tp2", pos.get("tp", 0)))
+    return _post(token, chat_id, format_tabular_order_opened(pos), kb)
 
 
 def send_position_closed(token, chat_id, pos):
-    text = format_tabular_position_closed(pos)
-    return requests.post(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
-        timeout=10,
-    )
+    return _post(token, chat_id, format_tabular_position_closed(pos))
 
 
 def send_signal_with_buttons(token, chat_id, signal):
     signal_id = signal["id"]
-    text = format_tabular_signal(signal)
-    keyboard = {
-        "inline_keyboard": [[
-            {"text": "✅ Відкрити позицію", "callback_data": f"confirm_{signal_id}"},
-            {"text": "❌ Пропустити", "callback_data": f"skip_{signal_id}"}
-        ]]
-    }
-    return requests.post(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        json={"chat_id": chat_id, "text": text, "parse_mode": "HTML", "reply_markup": keyboard},
-        timeout=10,
-    )
+    kb = _copy_keyboard(_sym(signal.get("symbol")), signal.get("entry", 0), signal.get("sl", 0),
+                        signal.get("tp1", 0), signal.get("tp2", 0))
+    kb["inline_keyboard"].append([
+        {"text": "✅ Відкрити позицію", "callback_data": f"confirm_{signal_id}"},
+        {"text": "❌ Пропустити", "callback_data": f"skip_{signal_id}"},
+    ])
+    return _post(token, chat_id, format_tabular_signal(signal), kb)
+
 
 def answer_callback(token, callback_id, text):
     return requests.post(

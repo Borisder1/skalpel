@@ -75,7 +75,7 @@ def _ask_groq_vision(b64_image: str) -> str:
         "Content-Type": "application/json"
     }
     # Актуальні моделі Groq (замість застарілої preview)
-    model = VISION_MODEL or "llama-3.2-11b-vision-instruct"
+    model = VISION_MODEL if (VISION_MODEL and "gemini" not in VISION_MODEL) else "meta-llama/llama-4-scout-17b-16e-instruct"
     payload = {
         "model": model,
         "messages": [{

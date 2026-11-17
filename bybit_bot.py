@@ -364,7 +364,15 @@ def get_all_usdt_symbols(exchange, max_symbols=None):
         'AMGN', 'APLD', 'ASML', 'ATH', 'AWE', 'AXTI', 'B2', 'B3', 'BAC', 'BAN', 'BBX',
         'COIN', 'MSTR', 'PLTR', 'AMD', 'INTC', 'NFLX', 'DIS', 'PYPL', 'UBER', 'HOOD',
         '4STOCK', 'GME', 'AMC', 'CRCL', 'QQQ', 'TQQQ', 'SQQQ', 'SNXX', 'SPY', 'IWM',
-        'DIA', 'SOXX', 'UVXY', 'VIX', 'TLT', 'EEM', 'GLD', 'SLV', 'USO', 'UNG'
+        'DIA', 'SOXX', 'UVXY', 'VIX', 'TLT', 'EEM', 'GLD', 'SLV', 'USO', 'UNG',
+        'SOXL', 'SOXS', 'KORU', 'TNA', 'TZA', 'LABU', 'LABD', 'NVDL', 'NVDU', 'TSLL', 'TSLQ', 'CONL',
+        'MSTU', 'MSTX', 'MSTZ', 'UPRO', 'SPXL', 'SPXS', 'SPXU', 'FNGU', 'FNGD', 'YINN', 'YANG', 'TECL',
+        'TECS', 'BITX', 'IBIT', 'ETHA', 'FBTC', 'GBTC', 'XLE', 'XLF', 'XLK', 'ARKK', 'SMH', 'KWEB',
+        'FXI', 'EWZ', 'EWJ', 'EWY', 'HYG', 'LQD', 'GDX', 'GDXJ', 'URA', 'NUGT', 'DUST', 'BOIL', 'KOLD',
+        'UCO', 'SCO', 'ORCL', 'CRM', 'AVGO', 'MU', 'QCOM', 'TSM', 'SMCI', 'JPM', 'WMT', 'NKE', 'SBUX',
+        'RIVN', 'LCID', 'NIO', 'XPEV', 'SHOP', 'SNOW', 'RBLX', 'SOFI', 'MARA', 'RIOT', 'CLSK', 'IREN',
+        'CORZ', 'BITF', 'CIFR', 'WULF', 'GLXY', 'BMNR', 'SBET', 'CRWV', 'OKLO', 'RKLB', 'IONQ', 'RGTI',
+        'QBTS', 'HIMS', 'CVNA', 'XAU', 'XAG', 'XAUT', 'PAXG_STOCK', 'USOIL', 'UKOIL', 'NATGAS'
     }
     raw_symbols = []
     for symbol, market in exchange.markets.items():
@@ -512,7 +520,7 @@ def validate_trade_levels(direction: str, entry: float, sl: float, tp1: float, t
     return True, "ok"
 
 
-def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pct, leverage=3.0, max_position_notional_pct=30.0):
+def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pct, leverage=3.0, max_position_notional_pct=30.0, max_trade_risk_usd=250.0):
     """Виставляє реальний лімітний ордер на Bybit Demo з Stop Loss та Take Profit."""
     try:
         levels_ok, levels_reason = validate_trade_levels(direction, entry, sl, tp1, tp2)
@@ -564,7 +572,7 @@ def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pc
         risk_amount = free_usdt * (risk_pct / 100.0)
         
         # V11.4: Жорсткий доларовий ліміт ризику на одну угоду (захист від великих просадок при великому балансі)
-        max_trade_risk = float(CONFIG.get("max_trade_risk_usd", 250.0))
+        max_trade_risk = float(max_trade_risk_usd or 250.0)
         if risk_amount > max_trade_risk:
             print(f"[{datetime.now()}] 🛡️ Risk capped by max_trade_risk_usd: {risk_amount:.2f}$ -> {max_trade_risk:.2f}$")
             risk_amount = max_trade_risk
@@ -1602,6 +1610,7 @@ def run_bot():
                             risk_pct=calculate_kelly_risk(float(CONFIG["risk_pct"]), sig.get("quant_score", 0.65)),
                             leverage=CONFIG.get("leverage", 3.0),
                             max_position_notional_pct=CONFIG.get("max_position_notional_pct", 30.0),
+                            max_trade_risk_usd=CONFIG.get("max_trade_risk_usd", 250.0),
                         )
                         if order:
                             log_trade(
@@ -2103,6 +2112,7 @@ def run_bot():
                                 risk_pct=calculate_kelly_risk(float(CONFIG["risk_pct"]), conf),
                                 leverage=CONFIG.get("leverage", 3.0),
                                 max_position_notional_pct=CONFIG.get("max_position_notional_pct", 30.0),
+                                max_trade_risk_usd=CONFIG.get("max_trade_risk_usd", 250.0),
                             )
                             if order:
                                 log_trade(
