@@ -121,16 +121,21 @@ def format_tabular_order_opened(pos: dict) -> str:
     entry, sl = pos.get("entry_price", 0), pos.get("sl", 0)
     tp1 = pos.get("tp1", pos.get("tp", 0))
     tp2 = pos.get("tp2", pos.get("tp", 0))
+    conf = float(pos.get("quant_score", 0) or 0) * 100
+    rr = pos.get("tp2_rr", 1.8)
     text = _header(direction, sym, "🛒 BYBIT DEMO  ·  ОРДЕР ВИКОНАНО")
+    if conf > 0:
+        text += f"🧠 Оцінка AI: <b>{conf:.0f}%</b>   ·   ⚖️ R:R <b>1:{_esc(rr)}</b>   ·   🛡 Ризик ≤ <b>$250</b>\n\n"
     text += _levels_block(direction, entry, sl, tp1, tp2) + "\n"
     text += (
-        f"📦 Об'єм: <code>{_esc(pos.get('qty', 'N/A'))}</code>\n"
-        f"🧭 Режим TP: {_esc(pos.get('tp_regime', '🎯 СТАНДАРТ'))}\n"
-        f"💼 Портфель: <b>{_esc(pos.get('active_count', 1))} / {_esc(pos.get('max_positions', 5))}</b>\n"
-        f"🆔 <code>{_esc(pos.get('order_id', 'N/A'))}</code>\n"
+        f"📦 Об'єм (Demo): <code>{_esc(pos.get('qty', 'N/A'))}</code>\n"
+        f"🧭 Режим TP: <b>{_esc(pos.get('tp_regime', '🎯 СТАНДАРТ'))}</b>\n"
+        f"💼 Портфель: <b>{_esc(pos.get('active_count', 1))} / {_esc(pos.get('max_positions', 5))}</b>   ·   🆔 <code>{_esc(pos.get('order_id', 'N/A'))}</code>\n"
     )
     if pos.get("tp_reasoning"):
         text += f"💡 <i>{_esc(pos.get('tp_reasoning'))}</i>\n"
+    if pos.get("ai_rationale"):
+        text += f"<blockquote expandable>🧠 <b>Деталі AI аналізу:</b>\n{_esc(pos.get('ai_rationale'))}</blockquote>\n"
     text += f"\n{COPY_HINT}"
     return text
 

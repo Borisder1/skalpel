@@ -535,7 +535,7 @@ def execute_demo_order(exchange, symbol, direction, entry, sl, tp1, tp2, risk_pc
             if ob:
                 bids = ob.get('bids', [])
                 asks = ob.get('asks', [])
-                current_price = bids[0][0] if bids else entry
+                current_price = float(bids[0][0]) if (bids and direction == "SHORT") else (float(asks[0][0]) if (asks and direction == "LONG") else float(entry))
                 
                 # Рахуємо об'єм в межах 1% від поточної ціни
                 bid_vol = sum(amount for price, amount in bids if price >= current_price * 0.99)
@@ -1136,6 +1136,17 @@ def sync_open_trades(exchange, config: dict):
 
                             update_trade_status(symbol=symbol, status=status_outcome, pnl=actual_pnl, order_id=order_id)
                             print(f"[{datetime.now()}] 🎯 Угода {symbol} закрита: {status_outcome} PnL={actual_pnl:.4f} USDT")
+                            try:
+                                send_position_closed(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, {
+                                    "symbol": symbol,
+                                    "side": "Buy" if direction == "LONG" else "Sell",
+                                    "entry_price": entry_price,
+                                    "exit_price": exit_price,
+                                    "pnl": actual_pnl,
+                                    "reason": "Bybit TP / SL виконано на біржі",
+                                })
+                            except Exception as e_tg_close:
+                                print(f"[{datetime.now()}] ⚠️ Помилка відправки закриття в ТГ: {e_tg_close}")
                             # V9.1: Progressive auto-blacklist after loss
                             if actual_pnl < 0:
                                 _daily_loss_counter["count"] += 1
@@ -1232,12 +1243,6 @@ def sync_open_trades(exchange, config: dict):
                         if reached_tp1 and t.get("breakeven_activated", 0) == 0:
                             print(f"[{datetime.now()}] 🧠 Віртуальна угода {symbol}: досягнуто TP1 ({tp1}). Переводимо в безубиток.")
                             update_breakeven_status(symbol=symbol, order_id=order_id, status=1)
-                            send_telegram_message(
-                                f"🧠 <b>Virtual TP1 Reached (Breakeven)</b>\n"
-                                f"Монета: <b>{symbol}</b> ({direction})\n"
-                                f"Ціна входу: {entry_price} | TP1: {tp1}\n"
-                                f"Віртуальний SL перенесено в безубиток."
-                            )
                         
                         sl = sl_current
                         
@@ -1727,11 +1732,7 @@ def run_bot():
                 htf_df = pd.DataFrame(raw_4h, columns=["timestamp", "open", "high", "low", "close", "volume"])
                 htf_df["timestamp"] = pd.to_datetime(htf_df["timestamp"], unit="ms", utc=True)
                 
-                # V11: Downcast float64 → float32 (зменшує RAM ~50%)
-                for _col in ["open", "high", "low", "close", "volume"]:
-                    df[_col] = df[_col].astype(np.float32)
-                    htf_df[_col] = htf_df[_col].astype(np.float32)
-                
+                # V12: Зберігаємо повну точність float64 для цін та індикаторів (усунення похибок округлення)
                 if len(df) < MIN_CANDLES_REQUIRED or len(htf_df) < MIN_CANDLES_REQUIRED:
                     print(f"[{datetime.now()}] ⚠️ Пропускаємо {symbol}: мало свічок")
                     continue
@@ -1740,14 +1741,23 @@ def run_bot():
 
                 # 2. Проганяємо логіку Racer
                 states = analyze_racer(df, htf_df, CONFIG)
-                last_state = states[-1]
-                if not pd.isna(getattr(last_state, "adx", np.nan)):
+                # V12 CRITICAL FIX: Для оцінки об'єму, ADX та FVG беремо останню ЗАКРИТУ свічку states[-2],
+                # оскільки states[-1] — це незакрита поточна 15-хвилинка (на якій об'єм на 1-й хвилині = 0.08)!
+                closed_state = states[-2] if len(states) >= 2 else states[-1]
+                live_state = states[-1]
+                last_state = closed_state if (closed_state.setup and closed_state.setup.valid) else (
+                    live_state if (live_state.setup and live_state.setup.valid) else closed_state
+                )
+
+                if not pd.isna(getattr(closed_state, "adx", np.nan)):
                     pairs_with_valid_adx += 1
-                    adx_v = float(last_state.adx)
-                    adx_t = float(getattr(last_state, "adx_threshold", CONFIG.get("adx_min", 12)))
-                    vol_v = float(getattr(last_state, "rel_vol", 0.0))
+                    adx_v = float(closed_state.adx)
+                    adx_t = float(getattr(closed_state, "adx_threshold", CONFIG.get("adx_min", 12)))
+                    vol_v = float(getattr(closed_state, "rel_vol", 0.0))
                     vol_t = float(CONFIG.get("vol_multiplier_min", CONFIG.get("vol_mult", 1.0)))
-                    fvg_v = float(getattr(last_state, "fvg_size_atr", 0.0))
+                    # Беремо максимальний FVG за останні 3 закриті свічки для чесної статистики
+                    recent_fvgs = [float(getattr(s, "fvg_size_atr", 0.0) or 0.0) for s in states[-4:-1]] if len(states) >= 4 else [float(getattr(closed_state, "fvg_size_atr", 0.0) or 0.0)]
+                    fvg_v = max(recent_fvgs) if recent_fvgs else 0.0
                     fvg_t = float(CONFIG.get("fvg_min_size", 0.08))
                     
                     margin = abs(adx_t - adx_v)
@@ -1775,7 +1785,7 @@ def run_bot():
                     else:
                         passed_all += 1
                         if not debug_logged:
-                            print(f"[{datetime.now()}] DEBUG {symbol}: всі фільтри ✅ але сетап не знайдено")
+                            print(f"[{datetime.now()}] DEBUG {symbol}: всі фільтри ✅ (очікуємо SMC імпульс/структуру)")
                             debug_logged = True
 
                 # 3. Перевіряємо сетап
@@ -1793,29 +1803,36 @@ def run_bot():
                     print(f"[{datetime.now()}]   Final decision (setup_found): {setup_found}")
 
                 if last_state.setup and last_state.setup.valid:
-                    # V9.0: Blacklist check before processing setup
                     if is_blacklisted(symbol):
                         print(f"[{datetime.now()}] 🚫 {symbol} у чорному списку — пропускаємо сетап")
                         continue
-                    # V11.1: Direction Bias — дозволяємо SHORT/LONG, але з підвищеним порогом
+
+                    born_idx = last_state.setup.born_bar
+                    birth_bar = states[born_idx] if 0 <= born_idx < len(states) else last_state
+
+                    # Сетап має бути свіжим (не старішим за 3 закриті свічки)
+                    if (len(states) - 1 - born_idx) > 3:
+                        continue
+
                     setup_dir = "LONG" if last_state.setup.dir == 1 else "SHORT"
                     _counter_trend = False
                     if _direction_bias == "BULLISH" and setup_dir == "SHORT":
                         _counter_trend = True
-                        print(f"[{datetime.now()}] ⚠️ Контр-тренд: BULLISH ринок + SHORT {symbol} — підвищуємо поріг")
                     elif _direction_bias == "BEARISH" and setup_dir == "LONG":
                         _counter_trend = True
-                        print(f"[{datetime.now()}] ⚠️ Контр-тренд: BEARISH ринок + LONG {symbol} — підвищуємо поріг")
-                    if last_setup_bars[symbol] != last_state.timestamp:
-                        adx_v = float(getattr(last_state, "adx", 0.0) or 0.0)
-                        adx_t = float(getattr(last_state, "adx_threshold", CONFIG.get("adx_min", 12)))
-                        vol_v = float(getattr(last_state, "rel_vol", 0.0) or 0.0)
+
+                    # Дедуплікація по часу свічки народження сетапу (1 сетап = 1 сигнал)
+                    if last_setup_bars.get(symbol) != birth_bar.timestamp:
+                        # Всі метрики сетапу беремо зі свічки його народження (birth_bar), а не з незакритої свічки!
+                        adx_v = float(getattr(birth_bar, "adx", 0.0) or 0.0)
+                        adx_t = float(getattr(birth_bar, "adx_threshold", CONFIG.get("adx_min", 12)))
+                        vol_v = float(getattr(birth_bar, "rel_vol", 0.0) or 0.0)
                         vol_t = float(CONFIG.get("vol_multiplier_min", CONFIG.get("vol_mult", 1.0)))
-                        born_idx = last_state.setup.born_bar
-                        birth_bar = states[born_idx] if 0 <= born_idx < len(states) else last_state
                         fvg_v = float(getattr(birth_bar, "fvg_size_atr", 0.0) or 0.0)
                         fvg_t = float(CONFIG.get("fvg_min_size", 0.08))
-                        if adx_v < adx_t or vol_v < vol_t or fvg_v < fvg_t:
+                        atr_v = float(getattr(birth_bar, "atr", 0.0) or getattr(closed_state, "atr", 0.0) or 0.0)
+
+                        if adx_v < adx_t or vol_v < vol_t or fvg_v < fvg_t or atr_v <= 0:
                             reason = f"ADX {adx_v:.2f}/{adx_t:.2f}, VOL {vol_v:.2f}/{vol_t:.2f}, FVG {fvg_v:.4f}/{fvg_t:.4f}"
                             record_event("setup_blocked_by_runtime_filters", {"symbol": symbol, "reason": reason})
                             print(f"[{datetime.now()}] 🧱 Сетап {symbol} заблоковано runtime-фільтрами: {reason}")
@@ -1823,65 +1840,45 @@ def run_bot():
 
                         setup = last_state.setup
                         direction = "LONG" if setup.dir == 1 else "SHORT"
-                        levels_ok, levels_reason = validate_trade_levels(direction, setup.entry, setup.sl, setup.tp1, setup.tp2)
-                        if not levels_ok:
-                            record_event("invalid_levels", {"symbol": symbol, "direction": direction, "reason": levels_reason})
-                            print(f"[{datetime.now()}] ⛔ Некоректний сетап {symbol}: {levels_reason}")
+
+                        # V12 CRITICAL FIX: Прив'язуємо вхід, SL, TP1, TP2 до реальної живої ціни ринку (live_price)
+                        live_price = float(df["close"].iloc[-1])
+                        # Не заходимо, якщо ціна вже втекла занадто далеко від свічки імпульсу (> 1.5 ATR)
+                        if direction == "LONG" and (live_price - float(birth_bar.c)) > atr_v * 1.5:
+                            print(f"[{datetime.now()}] ⏭️ Пропускаємо {symbol} LONG: ціна вже втекла на +{(live_price - float(birth_bar.c))/atr_v:.1f} ATR")
+                            last_setup_bars[symbol] = birth_bar.timestamp
+                            continue
+                        if direction == "SHORT" and (float(birth_bar.c) - live_price) > atr_v * 1.5:
+                            print(f"[{datetime.now()}] ⏭️ Пропускаємо {symbol} SHORT: ціна вже втекла на -{(float(birth_bar.c) - live_price)/atr_v:.1f} ATR")
+                            last_setup_bars[symbol] = birth_bar.timestamp
                             continue
 
-                        last_setup_bars[symbol] = last_state.timestamp
-                        cycle_setups += 1
-                        direction_str = "LONG 🟢" if setup.dir == 1 else "SHORT 🔴"
-                        
-                        msg = format_signal({
-                            "direction": direction,
-                            "symbol": symbol,
-                            "entry": setup.entry,
-                            "sl": setup.sl,
-                            "tp1": setup.tp1,
-                            "tp2": setup.tp2,
-                            "atr": getattr(last_state, "atr", "N/A"),
-                        })
-                        print(f"[{datetime.now()}] {msg.replace('<b>', '').replace('</b>', '')}")
-                        
-                        signal_payload = {
-                            "direction": direction,
-                            "symbol": symbol,
-                            "entry": setup.entry,
-                            "sl": setup.sl,
-                            "tp1": setup.tp1,
-                            "tp2": setup.tp2,
-                            "atr": getattr(last_state, "atr", 0),
-                        }
-                        
-                        # --- Квантове Оцінювання Сетапу (Quant Scoring Engine) ---
-                        print(f"[{datetime.now()}] 🤖 Квантове оцінювання для {symbol}...")
-                        
-                        # Отримуємо додаткові дані для скорингу
-                        adx_v = float(getattr(last_state, "adx", 0.0) or 0.0)
-                        adx_t = float(getattr(last_state, "adx_threshold", CONFIG.get("adx_min", 12)))
-                        vol_v = float(getattr(last_state, "rel_vol", 0.0) or 0.0)
-                        vol_t = float(CONFIG.get("vol_multiplier_min", CONFIG.get("vol_mult", 1.0)))
-                        born_idx = last_state.setup.born_bar
-                        birth_bar = states[born_idx] if 0 <= born_idx < len(states) else last_state
-                        fvg_v = float(getattr(birth_bar, "fvg_size_atr", 0.0) or 0.0)
-                        fvg_t = float(CONFIG.get("fvg_min_size", 0.08))
-                        atr_v = float(getattr(last_state, "atr", 0.0) or 0.0)
-                        
-                        is_htf_bullish = bool(getattr(last_state, "is_htf_bullish", False))
-                        is_htf_bearish = bool(getattr(last_state, "is_htf_bearish", False))
-                        session_v = str(getattr(last_state, "session", "Off"))
-                        bos_bull_v = bool(getattr(last_state, "bos_bull", False))
-                        bos_bear_v = bool(getattr(last_state, "bos_bear", False))
-                        choch_bull_v = bool(getattr(last_state, "choch_bull", False))
-                        choch_bear_v = bool(getattr(last_state, "choch_bear", False))
-                        ob_active_v = bool(getattr(last_state, "ob_active", False))
-                        bull_fvg_v = bool(getattr(last_state, "bull_fvg", False))
-                        bear_fvg_v = bool(getattr(last_state, "bear_fvg", False))
-                        is_impulse_bull_v = bool(getattr(last_state, "is_impulse_bull", False))
-                        is_impulse_bear_v = bool(getattr(last_state, "is_impulse_bear", False))
+                        sl_mult_cfg = float(CONFIG.get("sl_atr_mult", 1.5))
+                        if direction == "LONG":
+                            raw_dist = max(live_price - float(setup.sl), atr_v * sl_mult_cfg)
+                            sl_dist = float(np.clip(raw_dist, atr_v * 1.0, atr_v * 2.2))
+                            setup.entry = live_price
+                            setup.sl = live_price - sl_dist
+                        else:
+                            raw_dist = max(float(setup.sl) - live_price, atr_v * sl_mult_cfg)
+                            sl_dist = float(np.clip(raw_dist, atr_v * 1.0, atr_v * 2.2))
+                            setup.entry = live_price
+                            setup.sl = live_price + sl_dist
 
-                        # --- Динамічний розрахунок TP (Dynamic Adaptive Take-Profit) ---
+                        is_htf_bullish = bool(getattr(birth_bar, "is_htf_bullish", False))
+                        is_htf_bearish = bool(getattr(birth_bar, "is_htf_bearish", False))
+                        session_v = str(getattr(birth_bar, "session", "Off"))
+                        bos_bull_v = bool(getattr(birth_bar, "bos_bull", False))
+                        bos_bear_v = bool(getattr(birth_bar, "bos_bear", False))
+                        choch_bull_v = bool(getattr(birth_bar, "choch_bull", False))
+                        choch_bear_v = bool(getattr(birth_bar, "choch_bear", False))
+                        ob_active_v = bool(getattr(birth_bar, "ob_active", False))
+                        bull_fvg_v = bool(getattr(birth_bar, "bull_fvg", False))
+                        bear_fvg_v = bool(getattr(birth_bar, "bear_fvg", False))
+                        is_impulse_bull_v = bool(getattr(birth_bar, "is_impulse_bull", False))
+                        is_impulse_bear_v = bool(getattr(birth_bar, "is_impulse_bear", False))
+
+                        # --- Динамічний розрахунок TP (Dynamic Adaptive Take-Profit) від реальної ціни ---
                         is_imp = is_impulse_bull_v if direction == "LONG" else is_impulse_bear_v
                         tp1_p, tp2_p, tp1_rr, tp2_rr, tp_regime, tp_reason = calc_dynamic_tp(
                             direction=direction,
@@ -1895,12 +1892,34 @@ def run_bot():
                         )
                         setup.tp1 = tp1_p
                         setup.tp2 = tp2_p
-                        signal_payload["tp1"] = tp1_p
-                        signal_payload["tp2"] = tp2_p
-                        signal_payload["tp1_rr"] = tp1_rr
-                        signal_payload["tp2_rr"] = tp2_rr
-                        signal_payload["tp_regime"] = tp_regime
-                        signal_payload["tp_reasoning"] = tp_reason
+
+                        levels_ok, levels_reason = validate_trade_levels(direction, setup.entry, setup.sl, setup.tp1, setup.tp2)
+                        if not levels_ok:
+                            record_event("invalid_levels", {"symbol": symbol, "direction": direction, "reason": levels_reason})
+                            print(f"[{datetime.now()}] ⛔ Некоректний сетап {symbol}: {levels_reason}")
+                            continue
+
+                        last_setup_bars[symbol] = birth_bar.timestamp
+                        cycle_setups += 1
+                        direction_str = "LONG 🟢" if setup.dir == 1 else "SHORT 🔴"
+
+                        signal_payload = {
+                            "direction": direction,
+                            "symbol": symbol,
+                            "entry": setup.entry,
+                            "sl": setup.sl,
+                            "tp1": setup.tp1,
+                            "tp2": setup.tp2,
+                            "atr": atr_v,
+                            "tp1_rr": tp1_rr,
+                            "tp2_rr": tp2_rr,
+                            "tp_regime": tp_regime,
+                            "tp_reasoning": tp_reason,
+                        }
+
+                        msg = format_signal(signal_payload)
+                        print(f"[{datetime.now()}] {msg.replace('<b>', '').replace('</b>', '')}")
+                        print(f"[{datetime.now()}] 🤖 Квантове оцінювання для {symbol}...")
 
                         quant_res = score_setup(
                             entry=setup.entry,
@@ -1934,12 +1953,10 @@ def run_bot():
                         rationale = quant_res["rationale"]
                         factors_snapshot = quant_res["factors"]
                         auto_thresh = float(CONFIG.get("auto_execute_confidence_threshold", 0.65))
-                        # Path A: Counter-trend boost вимкнено — оцінюємо чистий квантовий бал
                         if _counter_trend:
-                            print(f"[{datetime.now()}] ℹ️ Контр-тренд сетап для {symbol} (поріг не завищується: {auto_thresh:.2f})")
+                            print(f"[{datetime.now()}] ℹ️ Контр-тренд сетап для {symbol} (поріг: {auto_thresh:.2f})")
                         
-                        # Path A: Реальний вхід при conf >= auto_thresh.
-                        # Нижчі бали (conf < auto_thresh) йдуть у VIRTUAL для навчання.
+                        # Нижчі бали (conf < auto_thresh) йдуть тихо у VIRTUAL для навчання БД
                         if conf < auto_thresh:
                             if conf >= 0.55:
                                 print(f"[{datetime.now()}] 🧠 Score {conf:.2f} < {auto_thresh:.2f}. Відкриваємо ВІРТУАЛЬНУ позицію для {symbol}")
@@ -1969,15 +1986,14 @@ def run_bot():
                                 record_event("setup_blocked_by_hard_gate", {"symbol": symbol, "score": conf, "threshold": auto_thresh})
                             continue
                         
-                        # --- Path A: Vision AI Filter (ТІЛЬКИ ДОРАДЧИЙ, НЕ БЛОКУЄ УГОДИ) ---
+                        # --- Vision AI Filter (ТІЛЬКИ ДОРАДЧИЙ, НЕ БЛОКУЄ УГОДИ) ---
                         try:
                             import vision_agent
                             now_ts = time.time()
                             cached = _vision_cache.get(symbol)
                             
-                            # V11: Ліміт vision cache (OOM prevention)
-                            if len(_vision_cache) > 200:
-                                oldest = sorted(_vision_cache, key=lambda k: _vision_cache[k]["timestamp"])[:100]
+                            if len(_vision_cache) > 50:
+                                oldest = sorted(_vision_cache, key=lambda k: _vision_cache[k]["timestamp"])[:25]
                                 for k in oldest:
                                     del _vision_cache[k]
                             
@@ -1985,12 +2001,11 @@ def run_bot():
                                 vision_decision = cached["decision"]
                                 print(f"[{datetime.now()}] 👁️ Vision AI (CACHED) для {symbol}: {vision_decision}")
                             else:
-                                print(f"[{datetime.now()}] 👁️ Перевірка {symbol} через Vision AI (PaliGemma)...")
+                                print(f"[{datetime.now()}] 👁️ Перевірка {symbol} через Vision AI...")
                                 vision_decision = vision_agent.ask_vision_oracle(df, symbol)
                                 _vision_cache[symbol] = {"decision": vision_decision, "timestamp": now_ts}
 
                             if (direction == "LONG" and vision_decision == "BEARISH") or (direction == "SHORT" and vision_decision == "BULLISH"):
-                                # Path A: Логуємо розбіжність, але НЕ блокуємо сетап
                                 print(f"[{datetime.now()}] 👁️ Vision AI розбіжність для {symbol}: {vision_decision} (угода НЕ блокується)")
                                 rationale += f" | 👁️ Vision AI розбіжність ({vision_decision})"
                                 factors_snapshot["vision_score"] = -0.05
@@ -2004,7 +2019,6 @@ def run_bot():
                         except Exception as e_vision:
                             print(f"[{datetime.now()}] ⚠️ Помилка Vision AI: {e_vision}")
 
-                        
                         signal_payload["quant_score"] = conf
                         signal_payload["factors_snapshot"] = factors_snapshot
                         signal_payload["ai_confidence"] = conf
@@ -2012,65 +2026,36 @@ def run_bot():
                         
                         is_auto_execute = conf >= auto_thresh
                         
-                        # Табельне сповіщення сигналу надсилається нижче через send_signal
-                        
-                        # Сповіщення в Telegram
-                        if require_confirmation and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID and not is_auto_execute:
-                            signal_id = f"{symbol}-{int(time.time())}"
-                            signal_key = (signal_payload["symbol"], signal_payload["direction"])
-                            symbol_open_orders = get_open_orders(exchange, symbol)
-                            if has_same_direction_open_order(symbol_open_orders, signal_payload["direction"]):
-                                record_event("order_already_exists", {"symbol": symbol, "direction": signal_payload["direction"], "phase": "enqueue"})
-                                send_telegram_message(
-                                    f"ℹ️ <b>{symbol}</b>: на біржі вже стоїть ордер у напрямку "
-                                    f"<b>{signal_payload['direction']}</b> — повторний сигнал пропущено."
-                                )
-                                continue
-                            with pending_lock:
-                                if signal_key in pending_keys:
-                                    continue
-                                pending_signals[signal_id] = {"signal": signal_payload, "created_at": time.time(), "approved": None}
-                                pending_keys.add(signal_key)
-                            record_event("confirm", {"symbol": symbol, "direction": signal_payload["direction"], "phase": "request"})
-                            send_signal_with_buttons(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, {**signal_payload, "id": signal_id})
-                            continue
-                        else:
-                            send_signal(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, signal_payload)
-                        
-                        # Вхід на Демо рахунку Bybit
+                        # Перевіряємо відкриті позиції на Демо рахунку Bybit ПЕРЕД відправкою повідомлень
                         positions = get_open_positions(exchange)
                         open_orders = get_open_orders(exchange)
                         
                         # Перевіряємо дублікат
                         has_duplicate = any(p.get("symbol") == symbol for p in positions)
-                                
                         if has_duplicate:
+                            print(f"[{datetime.now()}] ℹ️ {symbol} вже має відкриту позицію на Bybit — пропускаємо")
                             continue
                             
-                        # Перевіряємо ліміт активних позицій та ордерів окремо
-                        max_positions = int(CONFIG.get("max_concurrent_positions", 15))
+                        max_positions = int(CONFIG.get("max_concurrent_positions", 5))
                         max_orders = int(CONFIG.get("max_active_orders", 15))
                         
-                        # V10: Smart Retry (Probation)
                         import db_logger
                         loss_count_24h = db_logger.get_symbol_loss_count(symbol, 24)
-                        is_probation = (loss_count_24h >= 2) # Якщо 2+ збитки за 24г — тестуємо віртуально
+                        is_probation = (loss_count_24h >= 2)
                         
                         if len(positions) >= max_positions or len(open_orders) >= max_orders or is_probation:
-                            # ВІРТУАЛЬНИЙ вхід
+                            # ВІРТУАЛЬНИЙ вхід (тихо в БД для самонавчання без спаму в Telegram)
                             reason_msg = "Портфель заповнений" if not is_probation else "Smart Retry (Probation)"
-                            print(f"[{datetime.now()}] 🧠 {reason_msg}. Відкриваємо ВІРТУАЛЬНУ позицію для {symbol}")
-                            # V11.3: Дедуплікація — блокуємо повторний VIRTUAL для того ж символу
+                            print(f"[{datetime.now()}] 🧠 {reason_msg}. Відкриваємо ВІРТУАЛЬНУ позицію в БД для {symbol}")
                             try:
                                 already_virtual = any(
                                     t.get("symbol") == symbol and t.get("status") == "VIRTUAL_OPEN"
                                     for t in (get_open_trades() or [])
                                 )
                                 if already_virtual:
-                                    print(f"[{datetime.now()}] 🔄 Virtual dedup: {symbol} вже має VIRTUAL_OPEN — пропускаємо")
                                     continue
-                            except Exception as e_dedup:
-                                print(f"[{datetime.now()}] ⚠️ Virtual dedup error (ignored): {e_dedup}")
+                            except Exception:
+                                pass
                             log_trade(
                                 symbol=symbol,
                                 direction=direction,
@@ -2084,22 +2069,27 @@ def run_bot():
                                 quant_score=conf,
                                 factors_snapshot=factors_snapshot,
                             )
-                            send_telegram_message(
-                                format_tabular_virtual_opened({
-                                    "symbol": symbol,
-                                    "direction": direction,
-                                    "entry": setup.entry,
-                                    "sl": setup.sl,
-                                    "tp2": setup.tp2,
-                                    "quant_score": conf,
-                                    "reason_msg": reason_msg,
-                                    "tp_regime": tp_regime if 'tp_regime' in locals() else "🎯 СТАНДАРТ",
-                                })
-                            )
+                            continue
+
+                        if require_confirmation and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID and not is_auto_execute:
+                            signal_id = f"{symbol}-{int(time.time())}"
+                            signal_key = (signal_payload["symbol"], signal_payload["direction"])
+                            symbol_open_orders = get_open_orders(exchange, symbol)
+                            if has_same_direction_open_order(symbol_open_orders, signal_payload["direction"]):
+                                record_event("order_already_exists", {"symbol": symbol, "direction": signal_payload["direction"], "phase": "enqueue"})
+                                continue
+                            with pending_lock:
+                                if signal_key in pending_keys:
+                                    continue
+                                pending_signals[signal_id] = {"signal": signal_payload, "created_at": time.time(), "approved": None}
+                                pending_keys.add(signal_key)
+                            record_event("confirm", {"symbol": symbol, "direction": signal_payload["direction"], "phase": "request"})
+                            send_signal_with_buttons(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, {**signal_payload, "id": signal_id})
                             continue
 
                         if CONFIG.get("dry_run", True):
                             print(f"[{datetime.now()}] 🧪 dry_run=true, ордер НЕ відправлено для {symbol}")
+                            send_signal(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, signal_payload)
                         else:
                             order = execute_demo_order(
                                 exchange=exchange,
@@ -2138,6 +2128,9 @@ def run_bot():
                                     "tp": setup.tp2,
                                     "tp1": setup.tp1,
                                     "tp2": setup.tp2,
+                                    "tp2_rr": tp2_rr,
+                                    "quant_score": conf,
+                                    "ai_rationale": rationale,
                                     "order_id": order.get("id"),
                                     "tp_regime": tp_regime if 'tp_regime' in locals() else "🎯 СТАНДАРТ",
                                     "tp_reasoning": tp_reason if 'tp_reason' in locals() else "",
