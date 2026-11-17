@@ -67,15 +67,36 @@ def _ask_gemini_vision(b64_image: str) -> str:
 
     return "NEUTRAL"
 
+_GROQ_VISION_MODEL_CACHE = {"checked": False, "model": None}
+
+def _get_groq_vision_model(headers: dict):
+    if _GROQ_VISION_MODEL_CACHE["checked"]:
+        return _GROQ_VISION_MODEL_CACHE["model"]
+    _GROQ_VISION_MODEL_CACHE["checked"] = True
+    try:
+        r = requests.get("https://api.groq.com/openai/v1/models", headers=headers, timeout=10)
+        if r.status_code == 200:
+            models = [m.get("id", "") for m in r.json().get("data", [])]
+            for candidate in models:
+                cl = candidate.lower()
+                if any(k in cl for k in ("vision", "llama-4-scout", "llama-4-maverick", "pixtral", "llava")):
+                    _GROQ_VISION_MODEL_CACHE["model"] = candidate
+                    print(f"[{datetime.now()}] 👁️ Знайдено доступну Groq Vision модель: {candidate}")
+                    return candidate
+    except Exception:
+        pass
+    return None
+
 def _ask_groq_vision(b64_image: str) -> str:
-    """Виклик безкоштовного Groq Vision (Llama 3.2 11B Vision Instruct)."""
+    """Виклик безкоштовного Groq Vision з авто-виявленням доступної моделі на акаунті."""
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
-    # Актуальні моделі Groq (замість застарілої preview)
-    model = VISION_MODEL if (VISION_MODEL and "gemini" not in VISION_MODEL) else "meta-llama/llama-4-scout-17b-16e-instruct"
+    model = _get_groq_vision_model(headers)
+    if not model:
+        return "NEUTRAL"
     payload = {
         "model": model,
         "messages": [{

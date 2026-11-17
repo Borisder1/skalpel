@@ -372,7 +372,7 @@ def get_all_usdt_symbols(exchange, max_symbols=None):
         'UCO', 'SCO', 'ORCL', 'CRM', 'AVGO', 'MU', 'QCOM', 'TSM', 'SMCI', 'JPM', 'WMT', 'NKE', 'SBUX',
         'RIVN', 'LCID', 'NIO', 'XPEV', 'SHOP', 'SNOW', 'RBLX', 'SOFI', 'MARA', 'RIOT', 'CLSK', 'IREN',
         'CORZ', 'BITF', 'CIFR', 'WULF', 'GLXY', 'BMNR', 'SBET', 'CRWV', 'OKLO', 'RKLB', 'IONQ', 'RGTI',
-        'QBTS', 'HIMS', 'CVNA', 'XAU', 'XAG', 'XAUT', 'PAXG_STOCK', 'USOIL', 'UKOIL', 'NATGAS'
+        'QBTS', 'HIMS', 'CVNA', 'SNDK', 'WDC', 'STX', 'DELL', 'HPQ', 'IBM', 'CSCO', 'ORCL', 'SAP', 'NOW', 'PANW', 'CRWD', 'ZS', 'DDOG', 'NET', 'MDB', 'TEAM', 'WDAY', 'ADSK', 'SNPS', 'CDNS', 'KLAC', 'LRCX', 'MRVL', 'ON', 'MPWR', 'SWKS', 'QRVO', 'TXN', 'ADI', 'NXPI', 'MCHP', 'GFS', 'UMC', 'ASX', 'XAU', 'XAG', 'XAUT', 'PAXG_STOCK', 'USOIL', 'UKOIL', 'NATGAS'
     }
     raw_symbols = []
     for symbol, market in exchange.markets.items():
@@ -806,17 +806,20 @@ def cancel_stale_orders(exchange, config: dict):
 
 
 def set_bybit_position_sl(exchange, symbol, direction, new_sl):
-    """Встановлює новий Stop Loss для позиції на Bybit V5."""
+    """Встановлює новий Stop Loss (Безубиток) для позиції на Bybit V5 API."""
     try:
         market = exchange.market(symbol)
         params = {
             'category': 'linear',
             'symbol': market['id'],
-            'stopLoss': exchange.price_to_precision(symbol, new_sl),
+            'stopLoss': str(exchange.price_to_precision(symbol, new_sl)),
             'tpslMode': 'Full',
             'positionIdx': 0
         }
-        return safe_api_call(exchange.privateLinearPostPositionTradingStop, params)
+        fn = getattr(exchange, 'private_post_v5_position_trading_stop', None) or getattr(exchange, 'privatePostV5PositionTradingStop', None)
+        if fn:
+            return safe_api_call(fn, params)
+        return None
     except Exception as e:
         print(f"[{datetime.now()}] ⚠️ Не вдалося встановити SL для {symbol} на Bybit: {e}")
         return None
@@ -1093,7 +1096,7 @@ def sync_open_trades(exchange, config: dict):
                 was_filled = True
             elif order_id:
                 try:
-                    order_info = exchange.fetch_order(order_id, symbol)
+                    order_info = exchange.fetch_order(order_id, symbol, params={"acknowledged": True})
                     status = order_info.get("status")
                     if status == "canceled" or status == "rejected":
                         print(f"[{datetime.now()}] ℹ️ Ордер {order_id} ({symbol}) скасовано.")
@@ -1101,9 +1104,8 @@ def sync_open_trades(exchange, config: dict):
                         return
                     elif status == "closed":
                         was_filled = True
-                except Exception as e:
-                    print(f"[{datetime.now()}] ⚠️ Не вдалося отримати статус ордера {order_id}: {e}")
-                    # Вважаємо закритим, якщо його немає в активних
+                except Exception:
+                    # Для Market-ордерів старше 500 записів вважаємо виконаним і беремо PnL із closed_pnl
                     was_filled = True
             else:
                 was_filled = True
@@ -1113,10 +1115,24 @@ def sync_open_trades(exchange, config: dict):
                     try:
                         closed_pnl_records = fetch_closed_pnl_bybit(exchange, symbol)
                         if closed_pnl_records:
-                            latest_pnl = closed_pnl_records[-1]
-                            actual_pnl = float(latest_pnl.get("closedPnl") or 0.0)
+                            # V12.1: Сумуємо всі часткові закриття цієї позиції (50% TP1 + 50% TP2/BE) після часу відкриття
+                            trade_open_ms = 0
+                            try:
+                                trade_dt = datetime.strptime(t.get("timestamp", ""), "%Y-%m-%d %H:%M:%S")
+                                age_s = (datetime.now() - trade_dt).total_seconds()
+                                trade_open_ms = int((time.time() - age_s - 120) * 1000)
+                            except Exception:
+                                trade_open_ms = 0
+                            matching_records = [
+                                r for r in closed_pnl_records
+                                if int(r.get("createdTime") or r.get("updatedTime") or 0) >= trade_open_ms
+                            ] if trade_open_ms > 0 else []
+                            if not matching_records:
+                                matching_records = [closed_pnl_records[-1]]
+                            actual_pnl = sum(float(r.get("closedPnl") or 0.0) for r in matching_records)
+                            latest_pnl = matching_records[-1]
                             exit_price = float(latest_pnl.get("avgExitPrice") or entry_price)
-                            status_outcome = "WIN" if actual_pnl > 0 else "LOSS"
+                            status_outcome = "WIN" if actual_pnl >= 0 else "LOSS"
                             
                             # Самонавчання для Квантового Ядра
                             factors_str = t.get("factors_snapshot")
@@ -1244,31 +1260,32 @@ def sync_open_trades(exchange, config: dict):
                             print(f"[{datetime.now()}] 🧠 Віртуальна угода {symbol}: досягнуто TP1 ({tp1}). Переводимо в безубиток.")
                             update_breakeven_status(symbol=symbol, order_id=order_id, status=1)
                         
-                        sl = sl_current
-                        
-                        # Розраховуємо пропорційний об'єм на основі ризику для віртуальних PnL
-                        risk_pct = float(config.get("risk_pct", 1.0))
+                        # V12.1 CRITICAL FIX: Об'єм ЗАВЖДИ рахуємо від початкового стопу (sl_initial), а не від безубитку!
+                        risk_pct = float(config.get("risk_pct", 0.5))
                         risk_pct = min(max(risk_pct, 0.1), 1.0)
-                        risk_amount = free_usdt * (risk_pct / 100.0)
-                        max_trade_risk = float(config.get("max_trade_risk_usd", 250.0))
-                        if risk_amount > max_trade_risk:
-                            risk_amount = max_trade_risk
-                        price_diff = abs(entry_price - sl)
-                        if price_diff <= 0:
-                            price_diff = entry_price * 0.02
-                        virtual_qty = risk_amount / price_diff
-                        
+                        risk_amount = min(free_usdt * (risk_pct / 100.0), float(config.get("max_trade_risk_usd", 250.0)))
+                        initial_diff = abs(entry_price - sl_initial)
+                        if initial_diff <= 1e-8:
+                            initial_diff = max(entry_price * 0.015, 1e-8)
+                        virtual_qty = risk_amount / initial_diff
+
                         if reached_tp2 and not reached_sl:
+                            # 50% закрито на TP1 + 50% закрито на TP2
                             status_outcome = "VIRTUAL_WIN" if is_virtual else "WIN"
                             exit_price = tp2
-                            actual_pnl = virtual_qty * abs(tp2 - entry_price)
+                            actual_pnl = 0.5 * virtual_qty * abs(tp1 - entry_price) + 0.5 * virtual_qty * abs(tp2 - entry_price)
+                        elif reached_sl and breakeven_activated:
+                            # Ціна взяла TP1 (50% у плюс), а решта 50% закрилась у безубиток (entry_price) -> це WIN!
+                            status_outcome = "VIRTUAL_WIN" if is_virtual else "WIN"
+                            exit_price = entry_price
+                            actual_pnl = 0.5 * virtual_qty * abs(tp1 - entry_price)
                         elif reached_sl:
+                            # Чистий стоп до TP1
                             status_outcome = "VIRTUAL_LOSS" if is_virtual else "LOSS"
-                            exit_price = sl
-                            actual_pnl = -virtual_qty * abs(entry_price - sl)
+                            exit_price = sl_initial
+                            actual_pnl = -risk_amount
                         else:
                             if is_virtual:
-                                # Віртуальна угода ще відкрита
                                 return
                             status_outcome = "WIN"
                             exit_price = entry_price
@@ -1298,8 +1315,8 @@ def sync_open_trades(exchange, config: dict):
                         record_trade(symbol, direction, entry_price, exit_price, actual_pnl)
                         trade_prefix = "🧠 Віртуальна" if is_virtual else "🎯"
                         print(f"[{datetime.now()}] {trade_prefix} угода {symbol} закрита (fallback): {status_outcome} PnL={actual_pnl:.4f} USDT")
-                        # V9.1: Progressive auto-blacklist after loss (fallback path)
-                        if actual_pnl < 0:
+                        # V12.1: Блокуємо монету тільки після РЕАЛЬНИХ збитків на Bybit (віртуальні не блокують торгівлю)
+                        if actual_pnl < 0 and not is_virtual:
                             _daily_loss_counter["count"] += 1
                             _loss_count = get_symbol_loss_count(symbol, hours=24)
                             if _loss_count >= 3:

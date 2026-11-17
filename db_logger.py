@@ -322,7 +322,7 @@ def get_symbol_loss_count(symbol: str, hours: int = 24) -> int:
         cursor.execute(
             """
             SELECT COUNT(*) FROM trades
-            WHERE symbol = ? AND status IN ('LOSS', 'VIRTUAL_LOSS') AND timestamp > ?
+            WHERE symbol = ? AND status = 'LOSS' AND timestamp > ?
             """,
             (symbol, cutoff)
         )
