@@ -257,24 +257,15 @@ def build_runtime_config(base_config: dict, dry_cycles_without_setups: int) -> d
 
 
 def select_symbols_for_scan(exchange, symbols: list, config: dict, cycle_index: int) -> list:
-    """Режим розвідки: пріоритезує топ-ліквідні пари та ротує хвіст списку."""
-    max_symbols = int(config.get("max_symbols", 120))
-    scout_top_n = int(config.get("scout_top_n", 40))
-    rotate_step = int(config.get("rotate_step", 20))
+    """Режим розвідки: використовує вже відсортовані за 24h об'ємом топ-ліквідні пари та ротує хвіст списку (0 зайвих API/RAM викликів)."""
+    max_symbols = int(config.get("max_symbols", 40))
+    scout_top_n = int(config.get("scout_top_n", 25))
+    rotate_step = int(config.get("rotate_step", 15))
 
     if not symbols:
         return []
 
-    try:
-        from async_scanner import get_tickers_parallel
-        tickers = get_tickers_parallel(symbols)
-        def quote_volume(sym):
-            t = tickers.get(sym, {}) if isinstance(tickers, dict) else {}
-            return float(t.get("quoteVolume") or t.get("baseVolume") or 0.0)
-        ranked = sorted(symbols, key=quote_volume, reverse=True)
-    except Exception as e:
-        print(f"[{datetime.now()}] ⚠️ Не вдалося ранжувати по ліквідності: {e}")
-        ranked = list(symbols)
+    ranked = list(symbols)
 
     head = ranked[:max(0, min(scout_top_n, max_symbols))]
     tail_pool = ranked[len(head):]
@@ -372,7 +363,7 @@ def get_all_usdt_symbols(exchange, max_symbols=None):
         'UCO', 'SCO', 'ORCL', 'CRM', 'AVGO', 'MU', 'QCOM', 'TSM', 'SMCI', 'JPM', 'WMT', 'NKE', 'SBUX',
         'RIVN', 'LCID', 'NIO', 'XPEV', 'SHOP', 'SNOW', 'RBLX', 'SOFI', 'MARA', 'RIOT', 'CLSK', 'IREN',
         'CORZ', 'BITF', 'CIFR', 'WULF', 'GLXY', 'BMNR', 'SBET', 'CRWV', 'OKLO', 'RKLB', 'IONQ', 'RGTI',
-        'QBTS', 'HIMS', 'CVNA', 'SNDK', 'WDC', 'STX', 'DELL', 'HPQ', 'IBM', 'CSCO', 'ORCL', 'SAP', 'NOW', 'PANW', 'CRWD', 'ZS', 'DDOG', 'NET', 'MDB', 'TEAM', 'WDAY', 'ADSK', 'SNPS', 'CDNS', 'KLAC', 'LRCX', 'MRVL', 'ON', 'MPWR', 'SWKS', 'QRVO', 'TXN', 'ADI', 'NXPI', 'MCHP', 'GFS', 'UMC', 'ASX', 'XAU', 'XAG', 'XAUT', 'PAXG_STOCK', 'USOIL', 'UKOIL', 'NATGAS'
+        'QBTS', 'HIMS', 'CVNA', 'SNDK', 'WDC', 'STX', 'DELL', 'HPQ', 'IBM', 'CSCO', 'ORCL', 'SAP', 'NOW', 'PANW', 'CRWD', 'ZS', 'DDOG', 'NET', 'MDB', 'TEAM', 'WDAY', 'ADSK', 'SNPS', 'CDNS', 'KLAC', 'LRCX', 'MRVL', 'ON', 'MPWR', 'SWKS', 'QRVO', 'TXN', 'ADI', 'NXPI', 'MCHP', 'GFS', 'UMC', 'ASX', 'CL', 'NBIS', 'GC', 'SI', 'HG', 'NG', 'BZ', 'WTI', 'BRENT', 'SPX', 'NDX', 'DJI', 'XAU', 'XAG', 'XAUT', 'PAXG_STOCK', 'USOIL', 'UKOIL', 'NATGAS'
     }
     raw_symbols = []
     for symbol, market in exchange.markets.items():
@@ -1724,7 +1715,7 @@ def run_bot():
         print(f"[{datetime.now()}] ⚡ Асинхронне завантаження OHLCV для {len(cycle_symbols)} пар...")
         try:
             from async_scanner import get_market_data_parallel
-            parallel_data = get_market_data_parallel(cycle_symbols, [(TIMEFRAME, 100), ("4h", 50)])
+            parallel_data = get_market_data_parallel(cycle_symbols, [(TIMEFRAME, 100), ("4h", 50)], exchange=exchange)
             data_15m = parallel_data.get(TIMEFRAME, {})
             data_4h = parallel_data.get("4h", {})
         except Exception as e:
@@ -2270,17 +2261,7 @@ def run_bot():
 
         cycle_index += 1
         
-        # --- V8.5 Persistent AI Memory: Auto-Evolution ---
-        if cycle_index > 0 and cycle_index % 300 == 0:
-            print(f"[{datetime.now()}] 🧬 Цикл {cycle_index}: Запуск фонової Генетичної Еволюції...")
-            def _run_evo():
-                try:
-                    from genetic_algo import run_evolution
-                    report = run_evolution(generations=5)
-                    send_telegram_message(f"🧠 <b>Генетична Еволюція Завершена!</b>\n\n{report}")
-                except Exception as e:
-                    print(f"Помилка еволюції: {e}")
-            threading.Thread(target=_run_evo, daemon=True).start()
+        # V12.2: Фонова генетична еволюція на 300-му циклі вимкнена (онлайн-навчання веде QuantEngine без фонових потоків і OOM)
 
         # Перевірка для чергового запуску ШІ-агентів (раз на 24 години)
         if time.time() - last_agents_run > 86400:
@@ -2312,6 +2293,11 @@ def run_bot():
             del data_4h
         import gc
         gc.collect()
+        try:
+            import ctypes
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception:
+            pass
 
         # Пауза 60 сек між повними колами сканування ринку
         time.sleep(60)

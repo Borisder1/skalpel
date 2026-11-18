@@ -50,14 +50,14 @@ def record_cycle(cycle_data: dict):
     item = {"ts": _now_iso(), **cycle_data}
     data["cycles"].append(item)
     # keep file bounded
-    data["cycles"] = data["cycles"][-5000:]
+    data["cycles"] = data["cycles"][-300:]
     save_ops(data)
 
 
 def record_event(kind: str, payload: dict):
     data = load_ops()
     data["events"].append({"ts": _now_iso(), "kind": kind, **payload})
-    data["events"] = data["events"][-10000:]
+    data["events"] = data["events"][-500:]
     save_ops(data)
 
 
