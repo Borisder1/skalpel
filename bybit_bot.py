@@ -132,27 +132,27 @@ def format_signal(signal: dict) -> str:
     )
 
 
-def calc_dynamic_tp(direction: str, entry: float, sl: float, adx: float, rel_vol: float, is_impulse: bool, default_tp1_rr: float = 1.0, default_tp2_rr: float = 1.8):
+def calc_dynamic_tp(direction: str, entry: float, sl: float, adx: float, rel_vol: float, is_impulse: bool, default_tp1_rr: float = 1.2, default_tp2_rr: float = 2.0):
     risk = max(abs(entry - sl), 1e-10)
     
     # 1. Трендовий режим: високий ADX (>25) та наявність імпульсу
     if adx >= 25.0 and is_impulse:
-        tp1_rr = max(default_tp1_rr, 1.0)
-        tp2_rr = max(default_tp2_rr, 1.8)
+        tp1_rr = max(default_tp1_rr, 1.3)
+        tp2_rr = max(default_tp2_rr, 2.4)
         regime_label = f"🚀 ТРЕНД (ADX {adx:.1f})"
-        reasoning = f"Сильний спрямований тренд (ADX={adx:.1f}). Фіксація 50% на TP1 ({tp1_rr:.1f}R) в безубиток, витягування тренду до TP2 ({tp2_rr:.1f}R)."
-    # 2. Флет / боковик: низький ADX (<18) або низький об'єм (<0.85)
+        reasoning = f"Сильний тренд (ADX={adx:.1f}). 50% фіксуємо на TP1 ({tp1_rr:.1f}R, стоп у +Б/У), решту тягнемо до TP2 ({tp2_rr:.1f}R)."
+    # 2. Флет / боковик: низький ADX (<18) або помірний об'єм (<0.85)
     elif adx < 18.0 or rel_vol < 0.85:
-        tp1_rr = 0.8
-        tp2_rr = 1.2
+        tp1_rr = 1.1
+        tp2_rr = 1.7
         regime_label = f"⚡ СКАЛЬП (Флет {adx:.1f})"
-        reasoning = f"Боковий рух / низька волатильність (ADX={adx:.1f}). Швидкий скальп: короткий тейк TP1={tp1_rr:.1f}R / TP2={tp2_rr:.1f}R для швидкої фіксації."
+        reasoning = f"Спокійний ринок (ADX={adx:.1f}). Скальп-цілі: TP1={tp1_rr:.1f}R (50% + стоп у +Б/У) / TP2={tp2_rr:.1f}R."
     # 3. Збалансований режим (норма)
     else:
-        tp1_rr = default_tp1_rr
-        tp2_rr = default_tp2_rr
+        tp1_rr = max(default_tp1_rr, 1.2)
+        tp2_rr = max(default_tp2_rr, 2.0)
         regime_label = f"🎯 СТАНДАРТ (ADX {adx:.1f})"
-        reasoning = f"Помірна динаміка ринку. TP1={tp1_rr:.1f}R (фіксація 50%), TP2={tp2_rr:.1f}R."
+        reasoning = f"Збалансований імпульс. TP1={tp1_rr:.1f}R (фіксація 50% + стоп у +Б/У), TP2={tp2_rr:.1f}R."
 
     if direction == "LONG":
         tp1_price = entry + risk * tp1_rr
@@ -1036,7 +1036,10 @@ def sync_open_trades(exchange, config: dict):
                                     except Exception as e_close:
                                         print(f"[{datetime.now()}] ⚠️ Не вдалося закрити 50% позиції {symbol}: {e_close}")
                                         
-                            set_bybit_position_sl(exchange, symbol, direction, entry_price)
+                            # Ставимо SL у плюсовий безубиток (+0.12 відстані до TP1), щоб покрити комісію біржі!
+                            be_offset = abs(tp1 - entry_price) * 0.12
+                            be_price = (entry_price + be_offset) if direction == "LONG" else (entry_price - be_offset)
+                            set_bybit_position_sl(exchange, symbol, direction, be_price)
                             update_breakeven_status(symbol=symbol, order_id=order_id, status=1)
                             send_telegram_message(
                                 format_tabular_tp1({
