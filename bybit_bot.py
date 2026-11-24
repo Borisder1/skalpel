@@ -12,7 +12,7 @@ from json import JSONDecodeError
 import pandas as pd
 from datetime import datetime, timezone
 from dotenv import load_dotenv
-from racer_core import analyze_racer
+from racer_core import analyze_racer, calc_key_zones
 from telegram_notifier import (
     send_telegram_message,
     send_signal,
@@ -132,27 +132,26 @@ def format_signal(signal: dict) -> str:
     )
 
 
-def calc_dynamic_tp(direction: str, entry: float, sl: float, adx: float, rel_vol: float, is_impulse: bool, default_tp1_rr: float = 1.2, default_tp2_rr: float = 2.0):
+def calc_dynamic_tp(direction: str, entry: float, sl: float, adx: float, rel_vol: float, is_impulse: bool, default_tp1_rr: float = 0.70, default_tp2_rr: float = 1.45):
     risk = max(abs(entry - sl), 1e-10)
     
-    # 1. Трендовий режим: високий ADX (>25) та наявність імпульсу
+    # V13 Модель "4 плюси на 1 мінус" (IQTrend High-WR TP1 + Trend Runner TP2/TP3):
+    # Близький TP1 (0.68R-0.75R) закриває 50% у живий плюс і ставить стоп у +Б/У у ~80% угод!
     if adx >= 25.0 and is_impulse:
-        tp1_rr = max(default_tp1_rr, 1.3)
-        tp2_rr = max(default_tp2_rr, 2.4)
-        regime_label = f"🚀 ТРЕНД (ADX {adx:.1f})"
-        reasoning = f"Сильний тренд (ADX={adx:.1f}). 50% фіксуємо на TP1 ({tp1_rr:.1f}R, стоп у +Б/У), решту тягнемо до TP2 ({tp2_rr:.1f}R)."
-    # 2. Флет / боковик: низький ADX (<18) або помірний об'єм (<0.85)
+        tp1_rr = 0.75
+        tp2_rr = 1.60
+        regime_label = f"🚀 ТРЕНД 4:1 (ADX {adx:.1f})"
+        reasoning = f"Сильний тренд (ADX={adx:.1f}). Швидка фіксація 50% на TP1 ({tp1_rr:.2f}R → стоп у +Б/У), дожим тренду на TP2 ({tp2_rr:.2f}R) та TP3."
     elif adx < 18.0 or rel_vol < 0.85:
-        tp1_rr = 1.1
-        tp2_rr = 1.7
-        regime_label = f"⚡ СКАЛЬП (Флет {adx:.1f})"
-        reasoning = f"Спокійний ринок (ADX={adx:.1f}). Скальп-цілі: TP1={tp1_rr:.1f}R (50% + стоп у +Б/У) / TP2={tp2_rr:.1f}R."
-    # 3. Збалансований режим (норма)
+        tp1_rr = 0.65
+        tp2_rr = 1.30
+        regime_label = f"⚡ СКАЛЬП 4:1 (ADX {adx:.1f})"
+        reasoning = f"Локальний імпульс (ADX={adx:.1f}). Близький TP1={tp1_rr:.2f}R (гарантована фіксація 50% + стоп у +Б/У), TP2={tp2_rr:.2f}R."
     else:
-        tp1_rr = max(default_tp1_rr, 1.2)
-        tp2_rr = max(default_tp2_rr, 2.0)
-        regime_label = f"🎯 СТАНДАРТ (ADX {adx:.1f})"
-        reasoning = f"Збалансований імпульс. TP1={tp1_rr:.1f}R (фіксація 50% + стоп у +Б/У), TP2={tp2_rr:.1f}R."
+        tp1_rr = 0.70
+        tp2_rr = 1.45
+        regime_label = f"🎯 СТАНДАРТ 4:1 (ADX {adx:.1f})"
+        reasoning = f"Модель 4 плюси до 1 мінуса: TP1={tp1_rr:.2f}R (50% у плюс + стоп у +Б/У), TP2={tp2_rr:.2f}R."
 
     if direction == "LONG":
         tp1_price = entry + risk * tp1_rr
@@ -395,7 +394,33 @@ def get_all_usdt_symbols(exchange, max_symbols=None):
         print(f"[{datetime.now()}] Обмежуємо сканування до {max_symbols} пар (щоб не впиратись у Rate Limit).")
         symbols = symbols[:max_symbols]
 
-    print(f"[{datetime.now()}] Знайдено {len(symbols)} ліквідних USDT пар для сканування!")
+    # V13 MEMORY DIET: Видаляємо з пам'яті CCXT 3800+ зайвих спотових/опціонних ринків та важкі сирі поля info (~120MB економії RAM!)
+    try:
+        keep_set = set(symbols)
+        for k in list(exchange.markets.keys()):
+            if k not in keep_set:
+                m_obj = exchange.markets.pop(k, None)
+                if m_obj and m_obj.get("id") in getattr(exchange, "markets_by_id", {}):
+                    exchange.markets_by_id.pop(m_obj.get("id"), None)
+            else:
+                info = exchange.markets[k].get("info")
+                if isinstance(info, dict):
+                    exchange.markets[k]["info"] = {
+                        "lotSizeFilter": info.get("lotSizeFilter", {}),
+                        "priceFilter": info.get("priceFilter", {}),
+                    }
+        if hasattr(exchange, "currencies"):
+            exchange.currencies = {}
+        if hasattr(exchange, "tickers"):
+            exchange.tickers = {}
+        exchange.last_json_response = None
+        exchange.last_http_response = None
+        import gc
+        gc.collect()
+    except Exception as e_trim:
+        print(f"[{datetime.now()}] ⚠️ Market memory trim warning: {e_trim}")
+
+    print(f"[{datetime.now()}] Знайдено {len(symbols)} ліквідних USDT пар для сканування (пам'ять CCXT оптимізовано)!")
     return symbols
 
 def init_bybit(config: dict):
@@ -454,7 +479,8 @@ def init_bybit(config: dict):
         'timeout': 15000,
         'urls': {'api': base_url},
         'options': {
-            'defaultType': 'future',
+            'defaultType': 'linear',
+            'fetchMarkets': ['linear'],
             'adjustForTimeDifference': True,
             'recvWindow': 20000
         }
@@ -1322,8 +1348,8 @@ def sync_open_trades(exchange, config: dict):
                 except Exception as e_fallback:
                     print(f"[{datetime.now()}] ⚠️ Не вдалося синхронізувати угоду {symbol} через fallback: {e_fallback}")
         
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(open_trades), 5)) as executor:
-            executor.map(process_trade, open_trades)
+        for _t in open_trades[:12]:
+            process_trade(_t)
     except Exception as e_sync:
         print(f"[{datetime.now()}] ⚠️ Помилка у sync_open_trades: {e_sync}")
 
@@ -1864,15 +1890,31 @@ def run_bot():
                             last_setup_bars[symbol] = birth_bar.timestamp
                             continue
 
+                        # V13: Розрахунок ключових зон 4H/15m (Підтримка, Опір, Зона відкату POC/FVG, RSI-14)
+                        key_zones = calc_key_zones(df, htf_df, live_price, atr_v)
+                        rsi_now = float(key_zones.get("rsi", 50.0))
+                        dist_res = float(key_zones.get("dist_to_res_atr", 5.0))
+                        dist_sup = float(key_zones.get("dist_to_sup_atr", 5.0))
+
+                        # Захист від входу "в стіну" 4H рівня або на перекупленості/перепроданості (усуває серії стопів!)
+                        if direction == "LONG" and (rsi_now > 67.0 or dist_res < 0.65):
+                            print(f"[{datetime.now()}] 🧱 Пропускаємо {symbol} LONG: впирається в 4H Опір ({dist_res:.2f} ATR) або перекуплений RSI={rsi_now:.1f}")
+                            last_setup_bars[symbol] = birth_bar.timestamp
+                            continue
+                        if direction == "SHORT" and (rsi_now < 33.0 or dist_sup < 0.65):
+                            print(f"[{datetime.now()}] 🧱 Пропускаємо {symbol} SHORT: впирається в 4H Підтримку ({dist_sup:.2f} ATR) або перепроданий RSI={rsi_now:.1f}")
+                            last_setup_bars[symbol] = birth_bar.timestamp
+                            continue
+
                         sl_mult_cfg = float(CONFIG.get("sl_atr_mult", 1.5))
                         if direction == "LONG":
                             raw_dist = max(live_price - float(setup.sl), atr_v * sl_mult_cfg)
-                            sl_dist = float(np.clip(raw_dist, atr_v * 1.0, atr_v * 2.2))
+                            sl_dist = float(np.clip(raw_dist, atr_v * 1.0, atr_v * 2.1))
                             setup.entry = live_price
                             setup.sl = live_price - sl_dist
                         else:
                             raw_dist = max(float(setup.sl) - live_price, atr_v * sl_mult_cfg)
-                            sl_dist = float(np.clip(raw_dist, atr_v * 1.0, atr_v * 2.2))
+                            sl_dist = float(np.clip(raw_dist, atr_v * 1.0, atr_v * 2.1))
                             setup.entry = live_price
                             setup.sl = live_price + sl_dist
 
@@ -1914,6 +1956,12 @@ def run_bot():
                         cycle_setups += 1
                         direction_str = "LONG 🟢" if setup.dir == 1 else "SHORT 🔴"
 
+                        risk_abs = abs(setup.entry - setup.sl)
+                        tp3_rr = 2.40 if adx_v >= 25.0 else 2.10
+                        tp3_p = (setup.entry + risk_abs * tp3_rr) if direction == "LONG" else (setup.entry - risk_abs * tp3_rr)
+                        from async_scanner import fetch_derivatives_snapshot
+                        deriv_snap = fetch_derivatives_snapshot(symbol)
+
                         signal_payload = {
                             "direction": direction,
                             "symbol": symbol,
@@ -1921,11 +1969,15 @@ def run_bot():
                             "sl": setup.sl,
                             "tp1": setup.tp1,
                             "tp2": setup.tp2,
+                            "tp3": tp3_p,
                             "atr": atr_v,
                             "tp1_rr": tp1_rr,
                             "tp2_rr": tp2_rr,
+                            "tp3_rr": tp3_rr,
                             "tp_regime": tp_regime,
                             "tp_reasoning": tp_reason,
+                            "key_zones": key_zones,
+                            "derivatives": deriv_snap,
                         }
 
                         msg = format_signal(signal_payload)
@@ -2046,8 +2098,19 @@ def run_bot():
                         if has_duplicate:
                             print(f"[{datetime.now()}] ℹ️ {symbol} вже має відкриту позицію на Bybit — пропускаємо")
                             continue
+
+                        # V13 Анти-кореляційний захист: не більше 2 одночасних позицій в один бік (LONG або SHORT)
+                        target_side_set = {"buy", "long"} if direction == "LONG" else {"sell", "short"}
+                        same_dir_count = sum(
+                            1 for p in positions
+                            if str(p.get("side") or p.get("info", {}).get("side", "")).lower() in target_side_set
+                        )
+                        max_same_dir = int(CONFIG.get("max_same_direction_positions", 2))
+                        if same_dir_count >= max_same_dir:
+                            print(f"[{datetime.now()}] 🛡️ Анти-кореляція: вже відкрито {same_dir_count}/{max_same_dir} позицій у напрямку {direction} — пропускаємо {symbol}")
+                            continue
                             
-                        max_positions = int(CONFIG.get("max_concurrent_positions", 5))
+                        max_positions = int(CONFIG.get("max_concurrent_positions", 4))
                         max_orders = int(CONFIG.get("max_active_orders", 15))
                         
                         import db_logger
@@ -2139,7 +2202,10 @@ def run_bot():
                                     "tp": setup.tp2,
                                     "tp1": setup.tp1,
                                     "tp2": setup.tp2,
+                                    "tp3": tp3_p,
                                     "tp2_rr": tp2_rr,
+                                    "key_zones": key_zones,
+                                    "derivatives": deriv_snap,
                                     "quant_score": conf,
                                     "ai_rationale": rationale,
                                     "order_id": order.get("id"),
@@ -2266,14 +2332,7 @@ def run_bot():
         
         # V12.2: Фонова генетична еволюція на 300-му циклі вимкнена (онлайн-навчання веде QuantEngine без фонових потоків і OOM)
 
-        # Перевірка для чергового запуску ШІ-агентів (раз на 24 години)
-        if time.time() - last_agents_run > 86400:
-            try:
-                from cooperative_agents import run_cooperative_agent_consensus
-                run_cooperative_agent_consensus(exchange, symbol_window, TIMEFRAME, CONFIG_PATH)
-                last_agents_run = time.time()
-            except Exception as ae:
-                print(f"Помилка запуску консенсусу агентів: {ae}")
+        # V13: Офлайн-оптимізатор cooperative_agents вимкнено у живому воркері (захист 512MB RAM)
 
         # V11 Phase 8: Adaptive Feature System - Evaluate features
         try:
@@ -2294,6 +2353,17 @@ def run_bot():
             del data_15m
         if 'data_4h' in locals():
             del data_4h
+        try:
+            if hasattr(exchange, "ohlcvs") and isinstance(exchange.ohlcvs, dict):
+                exchange.ohlcvs.clear()
+            if hasattr(exchange, "trades") and isinstance(exchange.trades, dict):
+                exchange.trades.clear()
+            if hasattr(exchange, "tickers") and isinstance(exchange.tickers, dict):
+                exchange.tickers.clear()
+            exchange.last_json_response = None
+            exchange.last_http_response = None
+        except Exception:
+            pass
         import gc
         gc.collect()
         try:

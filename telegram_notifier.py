@@ -24,7 +24,7 @@ import html as _html
 
 
 def format_price(p) -> str:
-    """Ціна БЕЗ розділювачів тисяч — щоб її можна було одразу вставити в біржу."""
+    """Ціна БЕЗ розділювачів тисяч — готова до миттєвої вставки на біржу."""
     try:
         p = float(p)
     except Exception:
@@ -45,7 +45,6 @@ def _esc(x) -> str:
 
 
 def _sym(raw: str) -> str:
-    """BTC/USDT:USDT -> BTCUSDT (формат для пошуку на біржі)."""
     return str(raw or "").replace("/USDT:USDT", "USDT").replace(":USDT", "").replace("/", "")
 
 
@@ -63,33 +62,70 @@ def _pct(entry, level) -> str:
         return ""
 
 
-def _copy_keyboard(symbol: str, entry, sl, tp1, tp2) -> dict:
-    """Кнопки, які копіюють у буфер ЛИШЕ одне значення (Telegram CopyTextButton)."""
+def _copy_keyboard(symbol: str, entry, sl, tp1, tp2, tp3=None) -> dict:
+    """6 кнопок миттєвого копіювання окремих рівнів у буфер обміну (1 клік)."""
     def btn(label, value):
         return {"text": label, "copy_text": {"text": str(value)}}
+    row2 = [btn("📋 TP1", format_price(tp1)), btn("📋 TP2", format_price(tp2))]
+    if tp3:
+        row2.append(btn("📋 TP3", format_price(tp3)))
     return {"inline_keyboard": [
-        [btn(f"📋 {symbol}", symbol), btn("📋 Вхід", format_price(entry))],
-        [btn("📋 SL", format_price(sl)), btn("📋 TP1", format_price(tp1)), btn("📋 TP2", format_price(tp2))],
+        [btn(f"📋 {symbol}", symbol), btn("📋 Вхід", format_price(entry)), btn("📋 SL", format_price(sl))],
+        row2,
     ]}
 
 
-def _levels_block(direction, entry, sl, tp1, tp2) -> str:
-    return (
-        "<blockquote>"
-        f"📍 <b>ВХІД</b>   <code>{format_price(entry)}</code>\n"
-        f"🛡 <b>STOP</b>   <code>{format_price(sl)}</code>  <i>{_pct(entry, sl)}</i>\n"
-        f"🎯 <b>TP 1</b>   <code>{format_price(tp1)}</code>  <i>{_pct(entry, tp1)}</i>\n"
-        f"🏁 <b>TP 2</b>   <code>{format_price(tp2)}</code>  <i>{_pct(entry, tp2)}</i>"
-        "</blockquote>"
-    )
+def _levels_block(direction, entry, sl, tp1, tp2, tp3=None) -> str:
+    lines = [
+        f"📍 <b>ВХІД (Market)</b>  <code>{format_price(entry)}</code>",
+        f"🛡 <b>STOP-LOSS</b>      <code>{format_price(sl)}</code>  <i>({_pct(entry, sl)})</i>",
+        f"🎯 <b>TP 1 (50%+Б/У)</b> <code>{format_price(tp1)}</code>  <i>({_pct(entry, tp1)})</i>",
+        f"🎯 <b>TP 2 (Основна)</b> <code>{format_price(tp2)}</code>  <i>({_pct(entry, tp2)})</i>",
+    ]
+    if tp3:
+        lines.append(f"🏁 <b>TP 3 (Макро 4H)</b> <code>{format_price(tp3)}</code>  <i>({_pct(entry, tp3)})</i>")
+    return "<blockquote>" + "\n".join(lines) + "</blockquote>"
+
+
+def _zones_block(data: dict) -> str:
+    zones = data.get("key_zones")
+    if not isinstance(zones, dict):
+        return ""
+    pb = zones.get("pullback_zone")
+    rz = zones.get("res_zone")
+    sz = zones.get("sup_zone")
+    rsi = zones.get("rsi")
+    deriv = data.get("derivatives") or {}
+    fr = deriv.get("funding_pct", 0.0)
+    oi = deriv.get("open_interest_usd", 0.0)
+
+    lines = ["<b>🗺 КЛЮЧОВІ РІВНІ ТА ЗОНИ РИНКУ (4H / 15m):</b>", "<blockquote>"]
+    if pb:
+        lines.append(f"🔄 <b>Відкат (POC/FVG):</b> <code>{format_price(pb[0])}</code> – <code>{format_price(pb[1])}</code>")
+    if rz:
+        lines.append(f"🧱 <b>Опір 4H (Supply):</b> <code>{format_price(rz[0])}</code> – <code>{format_price(rz[1])}</code> {zones.get('res_stars', '⭐')}")
+    if sz:
+        lines.append(f"🛡 <b>Підтр. 4H (Demand):</b> <code>{format_price(sz[0])}</code> – <code>{format_price(sz[1])}</code> {zones.get('sup_stars', '⭐')}")
+    meta_parts = []
+    if rsi is not None:
+        meta_parts.append(f"RSI(14): <b>{float(rsi):.1f}</b>")
+    if fr:
+        meta_parts.append(f"Funding: <b>{fr:+.3f}%</b>")
+    if oi and oi > 0:
+        oi_m = oi / 1_000_000.0
+        meta_parts.append(f"OI: <b>${oi_m:.1f}M</b>")
+    if meta_parts:
+        lines.append("📊 " + "  ·  ".join(meta_parts))
+    lines.append("</blockquote>")
+    return "\n".join(lines) + "\n"
 
 
 def _header(direction, symbol, title) -> str:
-    side = "🟢 <b>LONG</b>" if _is_long(direction) else "🔴 <b>SHORT</b>"
+    side = "🟢 <b>LONG (BUY)</b>" if _is_long(direction) else "🔴 <b>SHORT (SELL)</b>"
     return f"<b>{title}</b>\n\n{side}  ·  💎 <b>{_esc(symbol)}</b>  ·  <code>{_esc(symbol)}</code>\n"
 
 
-COPY_HINT = "👆 <i>Торкніться значення або кнопки нижче — скопіюється тільки воно</i>"
+COPY_HINT = "👆 <i>Натисни на будь-яку цифру або кнопку 📋 нижче — скопіюється тільки вона</i>"
 
 
 def format_tabular_signal(signal: dict) -> str:
@@ -97,20 +133,22 @@ def format_tabular_signal(signal: dict) -> str:
     direction = signal.get("direction", "LONG")
     entry, sl = signal.get("entry", 0), signal.get("sl", 0)
     tp1, tp2 = signal.get("tp1", 0), signal.get("tp2", 0)
+    tp3 = signal.get("tp3")
     conf = float(signal.get("quant_score", signal.get("ai_confidence", 0)) or 0) * 100
     regime = signal.get("tp_regime", "🎯 СТАНДАРТ")
     reason = signal.get("tp_reasoning", "")
     rat = signal.get("ai_rationale", "")
-    rr = signal.get("tp2_rr", signal.get("rr", 1.8))
+    rr = signal.get("tp2_rr", signal.get("rr", 1.5))
 
-    text = _header(direction, sym, "⚡ SMC RACER  ·  НОВИЙ СИГНАЛ")
-    text += f"🧠 Оцінка AI: <b>{conf:.0f}%</b>   ·   ⚖️ R:R <b>1:{_esc(rr)}</b>\n\n"
-    text += _levels_block(direction, entry, sl, tp1, tp2) + "\n"
-    text += f"🧭 <b>Режим TP:</b> {_esc(regime)}\n"
+    text = _header(direction, sym, "⚡ SMC RACER  ·  СИГНАЛ (IQTrend Pro Model)")
+    text += f"🧠 Впевненість AI: <b>{conf:.0f}%</b>   ·   ⚖️ R:R <b>1:{_esc(rr)}</b>\n\n"
+    text += _levels_block(direction, entry, sl, tp1, tp2, tp3) + "\n"
+    text += _zones_block(signal)
+    text += f"🧭 <b>Режим:</b> {_esc(regime)}\n"
     if reason:
         text += f"💡 <i>{_esc(reason)}</i>\n"
     if rat:
-        text += f"<blockquote expandable>🧠 <b>Чому вхід:</b>\n{_esc(rat)}</blockquote>\n"
+        text += f"<blockquote expandable>🧠 <b>Фактори входу:</b>\n{_esc(rat)}</blockquote>\n"
     text += f"\n{COPY_HINT}"
     return text
 
@@ -121,16 +159,19 @@ def format_tabular_order_opened(pos: dict) -> str:
     entry, sl = pos.get("entry_price", 0), pos.get("sl", 0)
     tp1 = pos.get("tp1", pos.get("tp", 0))
     tp2 = pos.get("tp2", pos.get("tp", 0))
+    tp3 = pos.get("tp3")
     conf = float(pos.get("quant_score", 0) or 0) * 100
-    rr = pos.get("tp2_rr", 1.8)
+    rr = pos.get("tp2_rr", 1.5)
+
     text = _header(direction, sym, "🛒 BYBIT DEMO  ·  ОРДЕР ВИКОНАНО")
     if conf > 0:
-        text += f"🧠 Оцінка AI: <b>{conf:.0f}%</b>   ·   ⚖️ R:R <b>1:{_esc(rr)}</b>   ·   🛡 Ризик ≤ <b>$250</b>\n\n"
-    text += _levels_block(direction, entry, sl, tp1, tp2) + "\n"
+        text += f"🧠 Впевненість AI: <b>{conf:.0f}%</b>   ·   ⚖️ R:R <b>1:{_esc(rr)}</b>   ·   🛡 Ризик ≤ <b>$250</b>\n\n"
+    text += _levels_block(direction, entry, sl, tp1, tp2, tp3) + "\n"
+    text += _zones_block(pos)
     text += (
         f"📦 Об'єм (Demo): <code>{_esc(pos.get('qty', 'N/A'))}</code>\n"
-        f"🧭 Режим TP: <b>{_esc(pos.get('tp_regime', '🎯 СТАНДАРТ'))}</b>\n"
-        f"💼 Портфель: <b>{_esc(pos.get('active_count', 1))} / {_esc(pos.get('max_positions', 5))}</b>   ·   🆔 <code>{_esc(pos.get('order_id', 'N/A'))}</code>\n"
+        f"🧭 Стратегія: <b>{_esc(pos.get('tp_regime', '🎯 СТАНДАРТ'))}</b>\n"
+        f"💼 Портфель: <b>{_esc(pos.get('active_count', 1))} / {_esc(pos.get('max_positions', 4))}</b>   ·   🆔 <code>{_esc(pos.get('order_id', 'N/A'))}</code>\n"
     )
     if pos.get("tp_reasoning"):
         text += f"💡 <i>{_esc(pos.get('tp_reasoning'))}</i>\n"
@@ -167,7 +208,7 @@ def format_tabular_position_closed(pos: dict) -> str:
 def format_tabular_virtual_opened(pos: dict) -> str:
     sym = _sym(pos.get("symbol"))
     conf = float(pos.get("quant_score", 0) or 0) * 100
-    text = _header(pos.get("direction", "LONG"), sym, "🧪 ВІРТУАЛЬНИЙ ТЕСТ  ·  без реального ордера")
+    text = _header(pos.get("direction", "LONG"), sym, "🧪 ВІРТУАЛЬНИЙ ТЕСТ")
     text += (
         "<blockquote>"
         f"📍 Вхід   <code>{format_price(pos.get('entry', 0))}</code>\n"
@@ -175,19 +216,18 @@ def format_tabular_virtual_opened(pos: dict) -> str:
         f"🏁 Тейк   <code>{format_price(pos.get('tp2', 0))}</code>"
         "</blockquote>\n"
         f"🧠 Оцінка: <b>{conf:.0f}%</b>  ·  🧭 {_esc(pos.get('tp_regime', '🎯 СТАНДАРТ'))}\n"
-        f"📝 Причина: <i>{_esc(pos.get('reason_msg', 'Тест алгоритму'))}</i>"
     )
     return text
 
 
 def format_tabular_tp1(pos: dict) -> str:
     sym = _sym(pos.get("symbol"))
-    text = _header(pos.get("direction", "LONG"), sym, "🎉 TP1 ДОСЯГНУТО  ·  50% зафіксовано")
+    text = _header(pos.get("direction", "LONG"), sym, "🎉 TP1 ДОСЯГНУТО  ·  +50% ЗАФІКСОВАНО В ПЛЮС!")
     text += (
         "<blockquote>"
-        f"💹 Ціна     <code>{format_price(pos.get('current_price', 0))}</code>\n"
-        f"🎯 TP1      <code>{format_price(pos.get('tp1', 0))}</code>\n"
-        f"🛡 Новий SL <code>{format_price(pos.get('entry_price', 0))}</code>  <i>(беззбиток)</i>"
+        f"💹 Поточна ціна  <code>{format_price(pos.get('current_price', 0))}</code>\n"
+        f"🎯 Рівень TP1    <code>{format_price(pos.get('tp1', 0))}</code>\n"
+        f"🛡 Стоп у +Б/У   <code>{format_price(pos.get('entry_price', 0))}</code>  <i>(гарантований WIN)</i>"
         "</blockquote>"
     )
     return text
@@ -199,7 +239,6 @@ def _post(token, chat_id, text, reply_markup=None):
         payload["reply_markup"] = reply_markup
     resp = requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json=payload, timeout=10)
     if resp.status_code != 200 and reply_markup:
-        # Fallback: якщо клієнт/API не підтримує copy-кнопки — шлемо без них
         logger.warning(f"TG помилка з кнопками, повтор без них: {_sanitize_secret(resp.text)[:200]}")
         payload.pop("reply_markup", None)
         resp = requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json=payload, timeout=10)
@@ -210,13 +249,13 @@ def _post(token, chat_id, text, reply_markup=None):
 
 def send_signal(token, chat_id, signal):
     kb = _copy_keyboard(_sym(signal.get("symbol")), signal.get("entry", 0), signal.get("sl", 0),
-                        signal.get("tp1", 0), signal.get("tp2", 0))
+                        signal.get("tp1", 0), signal.get("tp2", 0), signal.get("tp3"))
     return _post(token, chat_id, format_tabular_signal(signal), kb)
 
 
 def send_position_opened(token, chat_id, pos):
     kb = _copy_keyboard(_sym(pos.get("symbol")), pos.get("entry_price", 0), pos.get("sl", 0),
-                        pos.get("tp1", pos.get("tp", 0)), pos.get("tp2", pos.get("tp", 0)))
+                        pos.get("tp1", pos.get("tp", 0)), pos.get("tp2", pos.get("tp", 0)), pos.get("tp3"))
     return _post(token, chat_id, format_tabular_order_opened(pos), kb)
 
 
@@ -227,7 +266,7 @@ def send_position_closed(token, chat_id, pos):
 def send_signal_with_buttons(token, chat_id, signal):
     signal_id = signal["id"]
     kb = _copy_keyboard(_sym(signal.get("symbol")), signal.get("entry", 0), signal.get("sl", 0),
-                        signal.get("tp1", 0), signal.get("tp2", 0))
+                        signal.get("tp1", 0), signal.get("tp2", 0), signal.get("tp3"))
     kb["inline_keyboard"].append([
         {"text": "✅ Відкрити позицію", "callback_data": f"confirm_{signal_id}"},
         {"text": "❌ Пропустити", "callback_data": f"skip_{signal_id}"},
@@ -414,7 +453,8 @@ def poll_telegram_callbacks(token, pending_signals):
             if cb_id in _PROCESSED_CALLBACKS:
                 continue
             if cb_id:
-                _PROCESSED_CALLBACKS.add(cb_id)
+                if len(_PROCESSED_CALLBACKS) > 300: _PROCESSED_CALLBACKS.clear()
+            _PROCESSED_CALLBACKS.add(cb_id)
             data = callback.get("data", "")
             chat_id = callback["message"]["chat"]["id"]
             msg_id = callback["message"]["message_id"]

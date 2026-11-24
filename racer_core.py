@@ -32,6 +32,95 @@ def calc_ema(arr: np.ndarray, period: int) -> np.ndarray:
         result[i] = (arr[i] - result[i - 1]) * alpha + result[i - 1]
     return result
 
+
+def calc_rsi(close: np.ndarray, period: int = 14) -> np.ndarray:
+    rsi = np.full(len(close), 50.0)
+    if len(close) <= period:
+        return rsi
+    delta = np.diff(close)
+    gains = np.where(delta > 0, delta, 0.0)
+    losses = np.where(delta < 0, -delta, 0.0)
+    avg_gain = np.mean(gains[:period])
+    avg_loss = np.mean(losses[:period])
+    for i in range(period, len(close)):
+        g = gains[i - 1]
+        l = losses[i - 1]
+        avg_gain = (avg_gain * (period - 1) + g) / period
+        avg_loss = (avg_loss * (period - 1) + l) / period
+        if avg_loss <= 1e-10:
+            rsi[i] = 100.0
+        else:
+            rs = avg_gain / avg_loss
+            rsi[i] = 100.0 - (100.0 / (1.0 + rs))
+    return rsi
+
+
+def calc_key_zones(df: pd.DataFrame, htf_df: pd.DataFrame, live_price: float, atr_val: float) -> dict:
+    """
+    Розраховує ключові рівні та зони підтримки/опору (4H Supply/Demand) і зону відкату (POC/FVG),
+    analogous to IQTrend Support/Resistance & Pullback Zones.
+    """
+    atr_safe = max(float(atr_val or 0.0), live_price * 0.005, 1e-8)
+    h4 = htf_df["high"].values if len(htf_df) > 0 else df["high"].values
+    l4 = htf_df["low"].values if len(htf_df) > 0 else df["low"].values
+    c15 = df["close"].values
+    v15 = df["volume"].values
+    h15 = df["high"].values
+    l15 = df["low"].values
+
+    # 1. 4H Key Support & Resistance levels above/below live_price
+    recent_h4 = h4[-30:] if len(h4) >= 30 else h4
+    recent_l4 = l4[-30:] if len(l4) >= 30 else l4
+
+    above_highs = [float(x) for x in recent_h4 if float(x) > live_price + atr_safe * 0.3]
+    below_lows = [float(x) for x in recent_l4 if float(x) < live_price - atr_safe * 0.3]
+
+    res_level = min(above_highs) if above_highs else float(np.max(recent_h4))
+    if res_level <= live_price:
+        res_level = live_price + atr_safe * 2.5
+
+    sup_level = max(below_lows) if below_lows else float(np.min(recent_l4))
+    if sup_level >= live_price:
+        sup_level = live_price - atr_safe * 2.5
+
+    zone_half = atr_safe * 0.35
+    res_zone = (res_level - zone_half, res_level + zone_half)
+    sup_zone = (sup_level - zone_half, sup_level + zone_half)
+
+    # Рахуємо кількість дотиків (сила зони 1..3 зірки)
+    res_touches = sum(1 for x in recent_h4 if abs(float(x) - res_level) <= atr_safe * 0.8)
+    sup_touches = sum(1 for x in recent_l4 if abs(float(x) - sup_level) <= atr_safe * 0.8)
+    res_stars = "⭐⭐⭐" if res_touches >= 3 else ("⭐⭐" if res_touches == 2 else "⭐")
+    sup_stars = "⭐⭐⭐" if sup_touches >= 3 else ("⭐⭐" if sup_touches == 2 else "⭐")
+
+    # 2. Рівень відкату (POC - Point of Control за 24 свічки + баланс свічки імпульсу)
+    win_c = c15[-24:] if len(c15) >= 24 else c15
+    win_v = v15[-24:] if len(v15) >= 24 else v15
+    poc_price = float(win_c[int(np.argmax(win_v))]) if len(win_v) > 0 else live_price
+    mid_bar = float((h15[-2] + l15[-2]) / 2.0) if len(h15) >= 2 else live_price
+    pullback_low = min(poc_price, mid_bar)
+    pullback_high = max(poc_price, mid_bar)
+
+    # 3. RSI(14) на останній закритій свічці
+    rsi_arr = calc_rsi(c15, 14)
+    rsi_val = float(rsi_arr[-2]) if len(rsi_arr) >= 2 else 50.0
+
+    return {
+        "res_level": res_level,
+        "res_zone": res_zone,
+        "res_stars": res_stars,
+        "res_touches": res_touches,
+        "sup_level": sup_level,
+        "sup_zone": sup_zone,
+        "sup_stars": sup_stars,
+        "sup_touches": sup_touches,
+        "pullback_zone": (pullback_low, pullback_high),
+        "poc_price": poc_price,
+        "rsi": rsi_val,
+        "dist_to_res_atr": (res_level - live_price) / atr_safe,
+        "dist_to_sup_atr": (live_price - sup_level) / atr_safe,
+    }
+
 def calc_dmi(df: pd.DataFrame, period: int = 14):
     high, low, close = df["high"].values, df["low"].values, df["close"].values
     prev_high = np.roll(high, 1)
