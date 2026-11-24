@@ -320,43 +320,55 @@ def analyze_racer(df: pd.DataFrame, htf_df: pd.DataFrame, config: dict):
             elif current_setup.dir == -1 and (h[i] >= current_setup.sl or l[i] <= current_setup.tp1):
                 current_setup = Setup()
 
-        # Народження нового сетапу відбувається тільки при достатньому об'ємі (rel_vol >= vol_min)
-        if rel_vol >= vol_min:
-            if (bull_fvg and is_impulse_bull and not bar.is_sideways and bar.is_htf_bullish
-                    and (bos_bull or choch_bull) and (fvg_bull_naked or ob_bull)):
+        # V13.1: Перевіряємо структуру за останні 3 свічки (i-2..i), щоб не вимагати 2-свічкового клімаксу на одній свічці
+        recent_bos_bull = bos_bull or choch_bull or any((bars[k].bos_bull or bars[k].choch_bull) for k in range(max(0, i-2), i))
+        recent_bos_bear = bos_bear or choch_bear or any((bars[k].bos_bear or bars[k].choch_bear) for k in range(max(0, i-2), i))
+        recent_sweep_bull = (not np.isnan(last_sweep_low) and (i - last_sweep_low_bar) <= 4)
+        recent_sweep_bear = (not np.isnan(last_sweep_high) and (i - last_sweep_high_bar) <= 4)
+
+        prev_fvg_atr = bars[i-1].fvg_size_atr if i >= 1 else 0.0
+        if prev_fvg_atr > bar.fvg_size_atr:
+            bar.fvg_size_atr = prev_fvg_atr
+
+        # Анти-клімакс фільтр: не заходити, якщо за 2 свічки ціна вже пролетіла > 2.2 ATR без відкату
+        two_bar_move = abs(c[i] - o[max(0, i-1)])
+        not_overextended = two_bar_move <= atr[i] * 2.2
+
+        if rel_vol >= vol_min and not_overextended:
+            if ((bull_fvg or (i >= 1 and bars[i-1].bull_fvg))
+                    and (is_impulse_bull or (c[i] > o[i] and body_size > atr[i] * 0.40 and ob_bull))
+                    and not bar.is_sideways and bar.is_htf_bullish
+                    and (recent_bos_bull or recent_sweep_bull)
+                    and (fvg_bull_naked or ob_bull)):
                 swing_low = np.min(l[max(0, i-5):i+1])
                 if not np.isnan(last_sweep_low) and (i - last_sweep_low_bar) < 10:
                     swing_low = min(swing_low, last_sweep_low)
-                fvg_top = l[i]
-                fvg_bot = h[i-2]
+                fvg_bot = h[i-2] if bull_fvg else (h[i-3] if i >= 3 else swing_low)
 
-                bull_fvg_size_atr = (fvg_top - fvg_bot) / max(atr[i], 1e-10)
-                bar.fvg_size_atr = bull_fvg_size_atr
-                if bull_fvg_size_atr >= fvg_min_size:
-                    # Вхід від поточної ціни закриття свічки імпульсу (під реальне Market-виконання)
+                if bar.fvg_size_atr >= fvg_min_size:
                     entry_price = float(c[i])
                     raw_sl = min(float(fvg_bot) - atr[i] * 0.25, entry_price - atr[i] * sl_atr_mult)
-                    risk = np.clip(entry_price - raw_sl, atr[i] * 1.0, atr[i] * 2.5)
+                    risk = np.clip(entry_price - raw_sl, atr[i] * 1.0, atr[i] * 2.1)
                     sl_price = float(entry_price - risk)
                     tp1_price = float(entry_price + risk * tp1_rr)
                     tp2_price = float(entry_price + risk * tp2_rr)
 
                     current_setup = Setup(True, 1, entry_price, sl_price, tp1_price, tp2_price, i)
 
-            elif (bear_fvg and is_impulse_bear and not bar.is_sideways and bar.is_htf_bearish
-                  and (bos_bear or choch_bear) and (fvg_bear_naked or ob_bear)):
+            elif ((bear_fvg or (i >= 1 and bars[i-1].bear_fvg))
+                  and (is_impulse_bear or (c[i] < o[i] and body_size > atr[i] * 0.40 and ob_bear))
+                  and not bar.is_sideways and bar.is_htf_bearish
+                  and (recent_bos_bear or recent_sweep_bear)
+                  and (fvg_bear_naked or ob_bear)):
                 swing_high = np.max(h[max(0, i-5):i+1])
                 if not np.isnan(last_sweep_high) and (i - last_sweep_high_bar) < 10:
                     swing_high = max(swing_high, last_sweep_high)
-                fvg_top = l[i-2]
-                fvg_bot = h[i]
+                fvg_top = l[i-2] if bear_fvg else (l[i-3] if i >= 3 else swing_high)
 
-                bear_fvg_size_atr = (fvg_top - fvg_bot) / max(atr[i], 1e-10)
-                bar.fvg_size_atr = bear_fvg_size_atr
-                if bear_fvg_size_atr >= fvg_min_size:
+                if bar.fvg_size_atr >= fvg_min_size:
                     entry_price = float(c[i])
                     raw_sl = max(float(fvg_top) + atr[i] * 0.25, entry_price + atr[i] * sl_atr_mult)
-                    risk = np.clip(raw_sl - entry_price, atr[i] * 1.0, atr[i] * 2.5)
+                    risk = np.clip(raw_sl - entry_price, atr[i] * 1.0, atr[i] * 2.1)
                     sl_price = float(entry_price + risk)
                     tp1_price = float(entry_price - risk * tp1_rr)
                     tp2_price = float(entry_price - risk * tp2_rr)
