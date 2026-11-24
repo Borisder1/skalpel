@@ -916,9 +916,16 @@ def manage_active_positions(exchange, positions: list, config: dict) -> list:
                     except Exception as e_trades:
                         print(f"[{datetime.now()}] ⚠️ Не вдалося завантажити історію з Bybit для {symbol}: {e_trades}")
                 
+                # V13.1: За таймаутом 4 год закриваємо ТІЛЬКИ якщо позиція в плюсі або біля нуля (>= -20$),
+                # щоб НЕ різати живі угоди примусово в мінус (-56$, -121$, -217$), поки вони не дійшли до TP1 або SL!
                 if age_seconds is not None and age_seconds >= max_age_seconds:
-                    should_close = True
-                    close_reason = f"таймаут {age_seconds/3600:.1f} год >= {max_age_seconds/3600:.1f} год (PnL: {unrealized_pnl:.2f} USDT)"
+                    if unrealized_pnl >= -20.0:
+                        should_close = True
+                        close_reason = f"таймаут {age_seconds/3600:.1f} год із фіксацією (PnL: {unrealized_pnl:+.2f} USDT)"
+                    elif age_seconds >= max_age_seconds * 3.0:
+                        # Жорсткий ліміт 12 годин для застарілих позицій
+                        should_close = True
+                        close_reason = f"макс. таймаут {age_seconds/3600:.1f} год (PnL: {unrealized_pnl:+.2f} USDT)"
             
             if should_close:
                 close_side = "sell" if side in {"buy", "long"} else "buy"
