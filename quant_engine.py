@@ -311,6 +311,38 @@ def _score_macro_confluence(direction: str) -> float:
     return _clamp(score)  # V10.2: Гарантовано 0.0-1.0 (без негативу)
 
 
+
+def _get_symbol_affinity_bonus(symbol: str) -> tuple[float, str]:
+    """
+    Скіл самонавчання по монетах (Per-Coin Win-Rate Memory):
+    Аналізує реальну історію монети в БД. Якщо монета стабільно дає прибуток (WR >= 65% за 3+ угод) —
+    дає бонус +0.04. Якщо монета хронічно збиткова (WR <= 35% за 4+ угод) — штраф -0.05.
+    """
+    if not symbol:
+        return 0.0, ""
+    try:
+        with db_logger.get_db_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) as total,
+                       SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins
+                FROM trades
+                WHERE symbol = ? AND status IN ('WIN', 'LOSS')
+                """,
+                (symbol,),
+            ).fetchone()
+            if row and row[0] and int(row[0]) >= 3:
+                total = int(row[0])
+                wins = int(row[1] or 0)
+                wr = wins / total
+                if wr >= 0.65:
+                    return 0.04, f" | 🏆 Топ-монета (WR {wr:.0%} за {total} угод)"
+                elif total >= 4 and wr <= 0.35:
+                    return -0.05, f" | ⚠️ Слабка історія монети (WR {wr:.0%})"
+    except Exception:
+        pass
+    return 0.0, ""
+
 # ─── ГОЛОВНА ФУНКЦІЯ СКОРИНГУ ──────────────────────────────────
 
 def score_setup(
@@ -398,7 +430,8 @@ def score_setup(
     elif high_factors >= 4:
         total_score += 0.03
         
-    total_score = _clamp(total_score)
+    aff_bonus, aff_note = _get_symbol_affinity_bonus(symbol)
+    total_score = _clamp(total_score + aff_bonus)
 
     # Вердикт
     if total_score >= 0.70:  # V10.2: калібрований поріг
@@ -427,7 +460,7 @@ def score_setup(
     strong = ", ".join(f"{factor_names_ua.get(k, k)}={v:.0%}" for k, v in top_factors)
     weak = ", ".join(f"{factor_names_ua.get(k, k)}={v:.0%}" for k, v in weak_factors)
     
-    rationale = f"Score {total_score:.0%} | Сильні: {strong} | Слабкі: {weak}"
+    rationale = f"Score {total_score:.0%} | Сильні: {strong} | Слабкі: {weak}{aff_note}"
 
     return {
         "score": round(total_score, 4),
