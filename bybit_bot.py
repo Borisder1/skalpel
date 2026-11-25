@@ -45,11 +45,24 @@ def start_health_server():
     
     class HealthHandler(http.server.SimpleHTTPRequestHandler):
         def do_GET(self):
-            if self.path in ("/", "/health"):
+            if self.path == "/health":
                 self.send_response(200)
                 self.send_header("Content-type", "text/plain")
                 self.end_headers()
                 self.wfile.write(b"OK")
+            elif self.path.startswith("/") or self.path.startswith("/terminal"):
+                term_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web_terminal.html")
+                if os.path.exists(term_path):
+                    self.send_response(200)
+                    self.send_header("Content-type", "text/html")
+                    self.end_headers()
+                    with open(term_path, "rb") as tf:
+                        self.wfile.write(tf.read())
+                else:
+                    self.send_response(200)
+                    self.send_header("Content-type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"OK")
             else:
                 self.send_response(404)
                 self.end_headers()
