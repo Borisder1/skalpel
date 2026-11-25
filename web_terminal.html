@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SMC Racer V13 · Quant Web Terminal (Bybit V5 Live)</title>
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    :root {
+      --bg: #0b0e14;
+      --panel: #121722;
+      --border: #1e2638;
+      --text: #e2e8f0;
+      --muted: #8b9bb4;
+      --green: #10b981;
+      --red: #ef4444;
+      --blue: #3b82f6;
+      --amber: #f59e0b;
+      --purple: #8b5cf6;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    body { background: var(--bg); color: var(--text); display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 18px; background: var(--panel); border-bottom: 1px solid var(--border);
+    }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 16px; }
+    .badge { background: rgba(16,185,129,0.15); color: var(--green); padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; }
+    .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    input, select, button {
+      background: #1a2130; color: var(--text); border: 1px solid var(--border);
+      padding: 6px 11px; border-radius: 6px; font-size: 13px; outline: none;
+    }
+    button { cursor: pointer; transition: 0.15s; font-weight: 600; }
+    button:hover { background: #252f45; border-color: var(--blue); }
+    button.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+    .layout { display: grid; grid-template-columns: 230px 1fr 340px; flex: 1; min-height: 0; }
+    .watchlist, .sidebar { background: var(--panel); overflow-y: auto; padding: 12px; }
+    .watchlist { border-right: 1px solid var(--border); }
+    .sidebar { border-left: 1px solid var(--border); display: flex; flex-direction: column; gap: 12px; }
+    .section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 8px; font-weight: 700; }
+    .coin-item {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 8px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 4px; font-size: 13px;
+      border: 1px solid transparent;
+    }
+    .coin-item:hover, .coin-item.selected { background: #1a2234; border-color: var(--border); }
+    .chart-wrap { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
+    #chart { flex: 1; width: 100%; height: 100%; }
+    .card { background: #171e2e; border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+    .signal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .dir-pill { padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 13px; }
+    .dir-long { background: rgba(16,185,129,0.2); color: var(--green); }
+    .dir-short { background: rgba(239,68,68,0.2); color: var(--red); }
+    .level-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 6px 8px; border-radius: 6px; background: #111622; margin-bottom: 5px; font-size: 13px;
+    }
+    .level-val { font-family: 'JetBrains Mono', Consolas, monospace; font-weight: 700; cursor: pointer; color: #fff; }
+    .copy-btn { padding: 3px 8px; font-size: 11px; background: #1f293d; border-radius: 4px; }
+    .zone-row { display: flex; justify-content: space-between; font-size: 12px; padding: 4px 0; border-bottom: 1px dashed #222b3d; }
+    .toast {
+      position: fixed; bottom: 20px; right: 20px; background: var(--green); color: #052e16;
+      padding: 10px 16px; border-radius: 8px; font-weight: 700; display: none; z-index: 999;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span>⚡ SMC RACER V13 · QUANT TERMINAL</span>
+      <span class="badge" id="conn-badge">🟢 Bybit V5 Live</span>
+    </div>
+    <div class="controls">
+      <input type="text" id="symbol-input" value="BTCUSDT" placeholder="Тікер (напр. SOLUSDT)" style="width:140px;text-transform:uppercase" />
+      <button onclick="loadCustomSymbol()">Пошук</button>
+      <div style="display:flex;gap:4px" id="tf-buttons">
+        <button onclick="setTf('5')" data-tf="5">5m</button>
+        <button onclick="setTf('15')" data-tf="15" class="active">15m</button>
+        <button onclick="setTf('60')" data-tf="60">1h</button>
+        <button onclick="setTf('240')" data-tf="240">4h</button>
+      </div>
+      <button onclick="refreshAll()">🔄 Оновити</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <div class="watchlist">
+      <div class="section-title">🔥 Топ Монети Бота</div>
+      <div id="coin-list"></div>
+    </div>
+
+    <div class="chart-wrap">
+      <div id="chart"></div>
+    </div>
+
+    <div class="sidebar">
+      <div class="card">
+        <div class="signal-header">
+          <div>
+            <div style="font-size:15px;font-weight:700" id="sig-symbol">BTCUSDT</div>
+            <div style="font-size:11px;color:var(--muted)" id="sig-regime">Модель 4:1 · 15m + 4H Зони</div>
+          </div>
+          <span class="dir-pill dir-long" id="sig-dir">LONG</span>
+        </div>
+
+        <div class="section-title">🎯 Рівні Ордера (Натисни 📋 для копіювання)</div>
+        <div class="level-row">
+          <span>📍 Вхід (Live)</span>
+          <div><span class="level-val" id="val-entry">—</span> <button class="copy-btn" onclick="copyVal('val-entry')">📋</button></div>
+        </div>
+        <div class="level-row">
+          <span style="color:var(--red)">🛡 Stop-Loss</span>
+          <div><span class="level-val" id="val-sl">—</span> <button class="copy-btn" onclick="copyVal('val-sl')">📋</button></div>
+        </div>
+        <div class="level-row">
+          <span style="color:var(--green)">🎯 TP 1 (50% + Б/У)</span>
+          <div><span class="level-val" id="val-tp1">—</span> <button class="copy-btn" onclick="copyVal('val-tp1')">📋</button></div>
+        </div>
+        <div class="level-row">
+          <span style="color:var(--blue)">🎯 TP 2 (Основна)</span>
+          <div><span class="level-val" id="val-tp2">—</span> <button class="copy-btn" onclick="copyVal('val-tp2')">📋</button></div>
+        </div>
+        <div class="level-row">
+          <span style="color:var(--purple)">🏁 TP 3 (Макро 4H)</span>
+          <div><span class="level-val" id="val-tp3">—</span> <button class="copy-btn" onclick="copyVal('val-tp3')">📋</button></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-title">🗺 Ключові Зони та Деривативи (IQTrend Model)</div>
+        <div class="zone-row"><span>🧱 Опір 4H (Supply):</span><strong id="z-res" style="color:var(--red)">—</strong></div>
+        <div class="zone-row"><span>🔄 Зона відкату (POC/FVG):</span><strong id="z-pb" style="color:var(--amber)">—</strong></div>
+        <div class="zone-row"><span>🛡 Підтримка 4H (Demand):</span><strong id="z-sup" style="color:var(--green)">—</strong></div>
+        <div class="zone-row"><span>📊 RSI(14) / ATR(14):</span><strong id="z-rsi">—</strong></div>
+        <div class="zone-row"><span>💧 Funding / Open Interest:</span><strong id="z-deriv">—</strong></div>
+        <div class="zone-row"><span>🧠 Вердикт Квантового Ядра:</span><strong id="z-verdict">—</strong></div>
+      </div>
+
+      <div class="card" id="bot-state-card" style="display:none">
+        <div class="section-title">🤖 Останні Угоди Бота на Render</div>
+        <div id="bot-trades-list" style="font-size:12px"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast">Скопійовано!</div>
+
+  <script>
+    const WATCHLIST = [
+      "BTCUSDT", "ETHUSDT", "SOLUSDT", "XMRUSDT", "AAVEUSDT",
+      "ADAUSDT", "TAOUSDT", "PIEVERSEUSDT", "ARIAUSDT", "VVVUSDT",
+      "MMTUSDT", "AVAXUSDT", "UNIUSDT", "SUIUSDT", "1000PEPEUSDT", "XRPUSDT"
+    ];
+    let currentSymbol = "BTCUSDT";
+    let currentTf = "15";
+    let chart, candleSeries, priceLines = [];
+
+    function fmt(p) {
+      p = Number(p);
+      if (!isFinite(p)) return "—";
+      if (p >= 100) return p.toFixed(2);
+      if (p >= 1) return p.toFixed(4);
+      if (p >= 0.01) return p.toFixed(5);
+      return p.toFixed(6);
+    }
+
+    function copyText(txt) {
+      navigator.clipboard.writeText(txt);
+      const t = document.getElementById("toast");
+      t.textContent = "📋 Скопійовано: " + txt;
+      t.style.display = "block";
+      setTimeout(() => t.style.display = "none", 1800);
+    }
+
+    function copyVal(id) {
+      const txt = document.getElementById(id).textContent.trim();
+      if (txt && txt !== "—") copyText(txt);
+    }
+
+    function initChart() {
+      const container = document.getElementById("chart");
+      chart = LightweightCharts.createChart(container, {
+        layout: { background: { color: "#0b0e14" }, textColor: "#8b9bb4" },
+        grid: { vertLines: { color: "#151b28" }, horzLines: { color: "#151b28" } },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+        rightPriceScale: { borderColor: "#1e2638" },
+        timeScale: { borderColor: "#1e2638", timeVisible: true },
+      });
+      candleSeries = chart.addCandlestickSeries({
+        upColor: "#10b981", downColor: "#ef4444",
+        borderUpColor: "#10b981", borderDownColor: "#ef4444",
+        wickUpColor: "#10b981", wickDownColor: "#ef4444",
+      });
+      window.addEventListener("resize", () => {
+        chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+      });
+    }
+
+    function renderWatchlist() {
+      const box = document.getElementById("coin-list");
+      box.innerHTML = WATCHLIST.map(s => `
+        <div class="coin-item ${s === currentSymbol ? 'selected' : ''}" onclick="selectSymbol('${s}')">
+          <strong>${s.replace('USDT','')}</strong>
+          <span style="color:var(--muted);font-size:11px">PERP</span>
+        </div>
+      `).join("");
+    }
+
+    function selectSymbol(sym) {
+      currentSymbol = sym;
+      document.getElementById("symbol-input").value = sym;
+      renderWatchlist();
+      refreshAll();
+    }
+
+    function loadCustomSymbol() {
+      let s = document.getElementById("symbol-input").value.trim().toUpperCase();
+      if (!s) return;
+      if (!s.endsWith("USDT")) s += "USDT";
+      currentSymbol = s;
+      renderWatchlist();
+      refreshAll();
+    }
+
+    function setTf(tf) {
+      currentTf = tf;
+      document.querySelectorAll("#tf-buttons button").forEach(b => {
+        b.classList.toggle("active", b.dataset.tf === tf);
+      });
+      refreshAll();
+    }
+
+    async function fetchKlines(symbol, interval, limit = 120) {
+      const url = `https://api.bybit.com/v5/market/kline?category=linear&symbol=${symbol}&interval=${interval}&limit=${limit}`;
+      const r = await fetch(url);
+      const j = await r.json();
+      const list = (j.result && j.result.list) || [];
+      return list.reverse().map(row => ({
+        time: Math.floor(Number(row[0]) / 1000),
+        open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]), volume: Number(row[5])
+      }));
+    }
+
+    function calcATR(bars, period = 14) {
+      if (bars.length < period + 1) return bars.length ? (bars[bars.length - 1].high - bars[bars.length - 1].low) : 0;
+      let trs = [];
+      for (let i = 1; i < bars.length; i++) {
+        const h = bars[i].high, l = bars[i].low, pc = bars[i - 1].close;
+        trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+      }
+      let atr = trs.slice(0, period).reduce((a, b) => a + b, 0) / period;
+      for (let i = period; i < trs.length; i++) atr = (atr * (period - 1) + trs[i]) / period;
+      return atr;
+    }
+
+    function calcRSI(bars, period = 14) {
+      if (bars.length <= period + 1) return 50;
+      let gains = 0, losses = 0;
+      for (let i = 1; i <= period; i++) {
+        const d = bars[i].close - bars[i - 1].close;
+        if (d >= 0) gains += d; else losses -= d;
+      }
+      let ag = gains / period, al = losses / period;
+      for (let i = period + 1; i < bars.length - 1; i++) {
+        const d = bars[i].close - bars[i - 1].close;
+        ag = (ag * (period - 1) + (d > 0 ? d : 0)) / period;
+        al = (al * (period - 1) + (d < 0 ? -d : 0)) / period;
+      }
+      if (al <= 1e-10) return 100;
+      return 100 - 100 / (1 + ag / al);
+    }
+
+    function clearLines() {
+      priceLines.forEach(l => candleSeries.removePriceLine(l));
+      priceLines = [];
+    }
+
+    function addLine(price, title, color, style = LightweightCharts.LineStyle.Dashed) {
+      const l = candleSeries.createPriceLine({ price, color, lineWidth: 2, lineStyle: style, axisLabelVisible: true, title });
+      priceLines.push(l);
+    }
+
+    async function refreshAll() {
+      try {
+        const [bars, htfBars, tickerResp] = await Promise.all([
+          fetchKlines(currentSymbol, currentTf, 140),
+          fetchKlines(currentSymbol, "240", 50),
+          fetch(`https://api.bybit.com/v5/market/tickers?category=linear&symbol=${currentSymbol}`).then(r => r.json())
+        ]);
+        if (!bars.length) return;
+        candleSeries.setData(bars);
+
+        const last = bars[bars.length - 1];
+        const live = last.close;
+        const atr = calcATR(bars, 14);
+        const rsi = calcRSI(bars, 14);
+
+        const htfSlice = htfBars.slice(-30);
+        const htfSma = htfSlice.reduce((s, b) => s + b.close, 0) / Math.max(htfSlice.length, 1);
+        const isBull = live >= htfSma;
+        const dir = isBull ? "LONG" : "SHORT";
+
+        const aboveH = htfSlice.map(b => b.high).filter(h => h > live + atr * 0.3);
+        const belowL = htfSlice.map(b => b.low).filter(l => l < live - atr * 0.3);
+        const resLevel = aboveH.length ? Math.min(...aboveH) : live + atr * 2.5;
+        const supLevel = belowL.length ? Math.max(...belowL) : live - atr * 2.5;
+
+        const recent24 = bars.slice(-24);
+        let pocBar = recent24[0];
+        recent24.forEach(b => { if (b.volume > pocBar.volume) pocBar = b; });
+        const pbLow = Math.min(pocBar.close, (bars[bars.length - 2].high + bars[bars.length - 2].low) / 2);
+        const pbHigh = Math.max(pocBar.close, (bars[bars.length - 2].high + bars[bars.length - 2].low) / 2);
+
+        const slDist = atr * 1.5;
+        const sl = isBull ? live - slDist : live + slDist;
+        const tp1 = isBull ? live + slDist * 0.70 : live - slDist * 0.70;
+        const tp2 = isBull ? live + slDist * 1.45 : live - slDist * 1.45;
+        const tp3 = isBull ? live + slDist * 2.30 : live - slDist * 2.30;
+
+        clearLines();
+        addLine(resLevel, "🧱 4H Опір (Supply)", "#ef4444", LightweightCharts.LineStyle.Dotted);
+        addLine(supLevel, "🛡 4H Підтримка (Demand)", "#10b981", LightweightCharts.LineStyle.Dotted);
+        addLine(sl, "🛡 STOP", "#ef4444", LightweightCharts.LineStyle.Solid);
+        addLine(tp1, "🎯 TP1 (50%+Б/У)", "#10b981", LightweightCharts.LineStyle.Dashed);
+        addLine(tp2, "🎯 TP2 (1.45R)", "#3b82f6", LightweightCharts.LineStyle.Dashed);
+        addLine(tp3, "🏁 TP3 (2.30R)", "#8b5cf6", LightweightCharts.LineStyle.Dashed);
+
+        document.getElementById("sig-symbol").textContent = currentSymbol;
+        const dirEl = document.getElementById("sig-dir");
+        dirEl.textContent = dir + (isBull ? " 🟢" : " 🔴");
+        dirEl.className = "dir-pill " + (isBull ? "dir-long" : "dir-short");
+
+        document.getElementById("val-entry").textContent = fmt(live);
+        document.getElementById("val-sl").textContent = fmt(sl);
+        document.getElementById("val-tp1").textContent = fmt(tp1);
+        document.getElementById("val-tp2").textContent = fmt(tp2);
+        document.getElementById("val-tp3").textContent = fmt(tp3);
+
+        document.getElementById("z-res").textContent = fmt(resLevel);
+        document.getElementById("z-pb").textContent = `${fmt(pbLow)} – ${fmt(pbHigh)}`;
+        document.getElementById("z-sup").textContent = fmt(supLevel);
+        document.getElementById("z-rsi").textContent = `RSI ${rsi.toFixed(1)} · ATR ${fmt(atr)}`;
+
+        const tItem = (tickerResp.result && tickerResp.result.list && tickerResp.result.list[0]) || {};
+        const fr = (Number(tItem.fundingRate || 0) * 100).toFixed(3);
+        const oi = (Number(tItem.openInterestValue || 0) / 1e6).toFixed(1);
+        document.getElementById("z-deriv").textContent = `${fr}% · OI $${oi}M`;
+
+        const distResAtr = (resLevel - live) / Math.max(atr, 1e-8);
+        const distSupAtr = (live - supLevel) / Math.max(atr, 1e-8);
+        let verdict = "✅ Чистий простір до 4H зони";
+        if (isBull && (rsi > 67 || distResAtr < 0.65)) verdict = "🧱 БЛОК: Впирається в 4H Опір / RSI>67";
+        if (!isBull && (rsi < 33 || distSupAtr < 0.65)) verdict = "🧱 БЛОК: Впирається в 4H Підтримку / RSI<33";
+        document.getElementById("z-verdict").textContent = verdict;
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    initChart();
+    renderWatchlist();
+    refreshAll();
+    setInterval(refreshAll, 15000);
+  </script>
+</body>
+</html>
